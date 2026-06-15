@@ -62,22 +62,106 @@ def detect_agent_clis() -> list[dict[str, Any]]:
       authed        bool — auth credentials configured (Claude / Codex)
       detail        short status string for TUI display
       model         only set for Ollama model entries
-      install_how   "npm" | "brew" | "url" | "ollama_pull" | None
+      install_how   "npm" | "brew" | "curl" | "url" | "ollama_pull" | None
       install_pkg   package/formula name to install
       auth_cmd      list[str] command to run for auth, or None
       auth_url      URL to open for auth, or None
       auth_note     extra plain-text instruction shown after install
     """
-    agents: list[dict[str, Any]] = []
     import sys as _sys_top
+    import concurrent.futures
+
     _on_windows = _sys_top.platform == "win32"
-    npm_ok    = bool(shutil.which("npm"))
-    brew_ok   = bool(shutil.which("brew")) and not _on_windows
+    npm_ok  = bool(shutil.which("npm"))
+    brew_ok = bool(shutil.which("brew")) and not _on_windows
+
+    # ── Fast binary checks (no subprocess) ────────────────────────────────────
+    claude_path = shutil.which("claude")
+    codex_path  = shutil.which("codex")
+    ag_path     = shutil.which("agy")
+    ollama_path = shutil.which("ollama")
+    claude_inst = bool(claude_path)
+    codex_inst  = bool(codex_path)
+    ag_inst     = bool(ag_path)
+    ollama_inst = bool(ollama_path)
+
+    # ── Parallel slow probes ───────────────────────────────────────────────────
+    def _probe_claude() -> tuple[bool, str]:
+        if not claude_inst:
+            return False, ""
+        try:
+            r = subprocess.run(
+                ["claude", "auth", "status"],
+                capture_output=True, text=True, timeout=5,
+            )
+            out = (r.stdout + r.stderr).lower()
+            authed = "logged in" in out or "authenticated" in out or r.returncode == 0
+        except Exception:
+            authed = False
+        return authed, claude_path or ""
+
+    def _probe_codex() -> tuple[bool, str]:
+        if not codex_inst:
+            return False, ""
+        authed, version = False, ""
+        try:
+            _cr = subprocess.run(
+                ["codex", "login", "status"],
+                capture_output=True, text=True, timeout=5,
+            )
+            out = (_cr.stdout + _cr.stderr).lower()
+            authed = _cr.returncode == 0 and (
+                "logged in" in out or "chatgpt" in out or "openai" in out
+            )
+        except Exception:
+            pass
+        try:
+            _cvr = subprocess.run(
+                ["codex", "--version"], capture_output=True, text=True, timeout=4,
+            )
+            version = (_cvr.stdout + _cvr.stderr).strip().split("\n")[0][:40]
+        except Exception:
+            pass
+        return authed, version
+
+    def _probe_agy() -> tuple[bool, str]:
+        if not ag_inst:
+            return False, ""
+        version = ""
+        try:
+            _vr = subprocess.run(
+                ["agy", "--version"], capture_output=True, text=True, timeout=4,
+            )
+            version = (_vr.stdout + _vr.stderr).strip().split("\n")[0][:40]
+        except Exception:
+            pass
+        # `agy auth status` opens a TUI/TTY and hangs for 3+ seconds in a subprocess.
+        # Detect auth by checking for credential files written after `agy auth login`.
+        import glob as _glob
+        _cred_pat = str(Path.home() / ".cli-proxy-api" / "antigravity-*.json")
+        authed = bool(_glob.glob(_cred_pat))
+        return authed, version
+
+    def _probe_ollama() -> tuple[bool, list[str]]:
+        if not ollama_inst:
+            return False, []
+        running = _ollama_running()
+        models  = _ollama_chat_models() if running else []
+        return running, models
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as _ex:
+        _fc = _ex.submit(_probe_claude)
+        _fd = _ex.submit(_probe_codex)
+        _fa = _ex.submit(_probe_agy)
+        _fo = _ex.submit(_probe_ollama)
+        claude_auth, _          = _fc.result()
+        codex_auth, codex_ver   = _fd.result()
+        ag_auth, ag_ver         = _fa.result()
+        ollama_running, chat_ms = _fo.result()
+
+    agents: list[dict[str, Any]] = []
 
     # ── Claude Code CLI ────────────────────────────────────────────────────────
-    claude_path = shutil.which("claude")
-    claude_inst = bool(claude_path)
-    claude_auth = _claude_authed() if claude_inst else False
     agents.append({
         "name":        "claude",
         "label":       "Claude Code",
@@ -91,10 +175,10 @@ def detect_agent_clis() -> list[dict[str, Any]]:
         "model":       None,
         "install_how": "npm" if npm_ok else None,
         "install_pkg": "@anthropic-ai/claude-code",
-        "auth_cmd":      ["claude", "auth", "login"],
-        "auth_url":      "https://claude.ai/settings/cli",
-        "auth_note":     "Opens your browser — sign in with your Anthropic account.",
-        "docs_url":      "https://docs.anthropic.com/claude-code",
+        "auth_cmd":    ["claude", "auth", "login"],
+        "auth_url":    "https://claude.ai/settings/cli",
+        "auth_note":   "Opens your browser — sign in with your Anthropic account.",
+        "docs_url":    "https://docs.anthropic.com/claude-code",
         "install_steps": [
             "npm install -g @anthropic-ai/claude-code",
             "claude auth login  # opens browser — sign in with Anthropic",
@@ -103,34 +187,13 @@ def detect_agent_clis() -> list[dict[str, Any]]:
     })
 
     # ── Codex CLI ─────────────────────────────────────────────────────────────
-    codex_path = shutil.which("codex")
-    codex_inst = bool(codex_path)
-    # Auth via OAuth (ChatGPT account) — detect with `codex login status`
-    codex_auth = False
-    if codex_inst:
-        try:
-            _cr = subprocess.run(
-                ["codex", "login", "status"],
-                capture_output=True, text=True, timeout=8,
-            )
-            out = (_cr.stdout + _cr.stderr).lower()
-            codex_auth = _cr.returncode == 0 and ("logged in" in out or "chatgpt" in out or "openai" in out)
-        except Exception:
-            codex_auth = False
-    codex_version = ""
-    if codex_inst:
-        try:
-            _cvr = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=5)
-            codex_version = (_cvr.stdout + _cvr.stderr).strip().split("\n")[0][:40]
-        except Exception:
-            pass
     agents.append({
         "name":          "codex",
         "label":         "Codex CLI (OpenAI)",
         "available":     codex_inst and codex_auth,
         "installed":     codex_inst,
         "authed":        codex_auth,
-        "detail":        (codex_version or codex_path or "ready") if codex_inst and codex_auth
+        "detail":        (codex_ver or codex_path or "ready") if codex_inst and codex_auth
                          else ("installed — run: codex login" if codex_inst
                                else ("npm i -g @openai/codex" if npm_ok
                                      else "requires Node/npm")),
@@ -149,47 +212,23 @@ def detect_agent_clis() -> list[dict[str, Any]]:
         ],
     })
 
-    # ── Antigravity CLI ───────────────────────────────────────────────────────
-    # Install: curl -fsSL https://antigravity.google/cli/install.sh | bash  (macOS/Linux)
-    # Binary is 'agy' (the Antigravity CLI installs as 'agy', not 'antigravity')
-    ag_path  = shutil.which("agy")
-    ag_inst  = bool(ag_path)
-    ag_auth  = False
-    if ag_inst:
-        try:
-            _r = subprocess.run(
-                ["agy", "auth", "status"],
-                capture_output=True, text=True, timeout=8,
-            )
-            ag_auth = _r.returncode == 0 or "logged" in (_r.stdout + _r.stderr).lower()
-        except Exception:
-            ag_auth = False
-    ag_version = ""
-    if ag_inst:
-        try:
-            _vr = subprocess.run(
-                ["agy", "--version"], capture_output=True, text=True, timeout=5,
-            )
-            ag_version = (_vr.stdout + _vr.stderr).strip().split("\n")[0][:40]
-        except Exception:
-            pass
-    _is_win = _on_windows
+    # ── Antigravity CLI (binary: agy) ─────────────────────────────────────────
     _ag_install_cmd = (
         ["bash", "-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"]
-        if not _is_win else
+        if not _on_windows else
         ["powershell", "-Command", "irm https://antigravity.google/cli/install.ps1 | iex"]
     )
-    _ag_install_display = (
+    _ag_display = (
         "curl -fsSL https://antigravity.google/cli/install.sh | bash"
-        if not _is_win else
+        if not _on_windows else
         "irm https://antigravity.google/cli/install.ps1 | iex  # run in PowerShell"
     )
-    _ag_install_steps = (
+    _ag_steps = (
         [
             "curl -fsSL https://antigravity.google/cli/install.sh | bash",
             "agy auth login  # browser redirect — sign in with Google",
             "agy --version  # verify",
-        ] if not _is_win else [
+        ] if not _on_windows else [
             "irm https://antigravity.google/cli/install.ps1 | iex  # run in PowerShell",
             "agy auth login  # browser redirect — sign in with Google",
             "agy --version  # verify",
@@ -201,54 +240,43 @@ def detect_agent_clis() -> list[dict[str, Any]]:
         "available":           ag_inst and ag_auth,
         "installed":           ag_inst,
         "authed":              ag_auth,
-        "detail":              (ag_version or ag_path or "ready") if ag_inst
-                               else _ag_install_display,
+        "detail":              (ag_ver or ag_path or "ready") if ag_inst else _ag_display,
         "model":               None,
         "install_how":         "curl",
         "install_cmd":         _ag_install_cmd,
-        "install_cmd_display": _ag_install_display,
+        "install_cmd_display": _ag_display,
         "install_pkg":         None,
         "auth_cmd":            ["agy", "auth", "login"],
         "auth_url":            "https://antigravity.google/download#antigravity-cli",
         "auth_note":           "Sign in with your Google account.\n"
                                "Your browser will open for OAuth — log in and the token is stored automatically.",
         "docs_url":            "https://antigravity.google/download#antigravity-cli",
-        "install_steps":       _ag_install_steps,
+        "install_steps":       _ag_steps,
     })
 
     # ── Ollama (platform + models) ─────────────────────────────────────────────
-    ollama_path    = shutil.which("ollama")
-    ollama_inst    = bool(ollama_path)
-    ollama_running = _ollama_running() if ollama_inst else False
-    chat_models    = _ollama_chat_models() if ollama_running else []
-
     if not ollama_inst:
-        # Offer to install Ollama itself — it will let the user pull a model next
         if _on_windows:
-            _ollama_how    = "url"
-            _ollama_detail = "download OllamaSetup.exe from ollama.com/download"
+            _ol_how, _ol_detail = "url", "download OllamaSetup.exe from ollama.com/download"
         elif brew_ok:
-            _ollama_how    = "brew"
-            _ollama_detail = "brew install ollama"
+            _ol_how, _ol_detail = "brew", "brew install ollama"
         else:
-            _ollama_how    = "url"
-            _ollama_detail = "download from ollama.com/download"
+            _ol_how, _ol_detail = "url", "download from ollama.com/download"
         agents.append({
             "name":        "__install_ollama__",
             "label":       "Local model (Ollama — not installed)",
             "available":   False,
             "installed":   False,
             "authed":      True,
-            "detail":      _ollama_detail,
+            "detail":      _ol_detail,
             "model":       None,
-            "install_how": _ollama_how,
+            "install_how": _ol_how,
             "install_pkg": "ollama",
             "auth_cmd":    None,
             "auth_url":    "https://ollama.com/download",
             "auth_note":   "",
         })
-    elif not chat_models:
-        # Ollama installed but no chat models — offer to pull one
+    elif not chat_ms:
         agents.append({
             "name":        "__pull_ollama_model__",
             "label":       "Local model (Ollama — no models pulled yet)",
@@ -264,7 +292,7 @@ def detect_agent_clis() -> list[dict[str, Any]]:
             "auth_note":   "",
         })
     else:
-        for m in chat_models[:4]:
+        for m in chat_ms[:4]:
             agents.append({
                 "name":        f"ollama:{m}",
                 "label":       f"Local — {m}",
