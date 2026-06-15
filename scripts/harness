@@ -165,13 +165,17 @@ def run_status(target: Path) -> int:
 
 def _maybe_build_semantic_index(target: Path) -> None:
     from harness_core.semantic_index import detect_ollama, build_semantic_index, ollama_embed
-    from harness_core.tui import confirm, select
+    from harness_core.tui import confirm, select, MenuItem, menu
 
-    models = detect_ollama()
-    if not models:
+    embed_models, other_models = detect_ollama()
+    all_models = embed_models + other_models
+
+    if not all_models:
         print(
             "\n[harness] Ollama not running — skipping semantic index.\n"
-            "          Start Ollama and run:  harness index"
+            "          Start Ollama then pull an embedding model:\n"
+            "            ollama pull nomic-embed-text\n"
+            "          Then retry: harness  →  index"
         )
         return
 
@@ -179,11 +183,22 @@ def _maybe_build_semantic_index(target: Path) -> None:
         print("[harness] Semantic index skipped.")
         return
 
-    _EMBED_HINTS = ("embed", "nomic", "mxbai", "bge", "e5", "all-minilm")
-    preferred = [m for m in models if any(h in m.lower() for h in _EMBED_HINTS)]
-    ordered   = preferred + [m for m in models if m not in preferred]
+    # Build menu items — embedding models first with a clear label
+    items: list[MenuItem] = []
+    for m in embed_models:
+        items.append(MenuItem(key=m, label=m, desc="✓ embedding model — fast & accurate"))
+    for m in other_models:
+        items.append(MenuItem(key=m, label=m,
+                              desc="⚠ chat/code model — slow for embeddings, may fail"))
 
-    chosen = select("Select Ollama model for embeddings:", ordered, default=0)
+    if not embed_models:
+        print(
+            "\n\x1b[33m[harness] Warning: no dedicated embedding model found.\x1b[0m\n"
+            "  Chat models (qwen, llama, etc.) are not optimised for /api/embed.\n"
+            "  Recommended: ollama pull nomic-embed-text\n"
+        )
+
+    chosen = menu("Select Ollama model for embeddings:", items)
     if chosen is None:
         print("[harness] Semantic index skipped.")
         return
@@ -192,7 +207,9 @@ def _maybe_build_semantic_index(target: Path) -> None:
     index_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"\n[harness] Building semantic index → {index_path}")
-    print(f"[harness] Model: {chosen}  (may take a few minutes for large repos)")
+    print(f"[harness] Model: {chosen}")
+    if chosen in other_models:
+        print("[harness] Note: chat model selected — first run may be slow")
 
     try:
         stats   = build_semantic_index(target, index_path,
@@ -203,8 +220,11 @@ def _maybe_build_semantic_index(target: Path) -> None:
         new_vec = stats.get("embedded_count", total)
         print(f"[harness] Done — {total} chunks  ({new_vec} embedded, {reused} reused)")
     except Exception as exc:
-        print(f"[harness] Semantic index failed: {exc}")
-        print("[harness] Retry with:  harness  →  index")
+        print(f"\n\x1b[33m[harness] Semantic index failed:\x1b[0m {exc}")
+        if chosen in other_models:
+            print("[harness] Fix: ollama pull nomic-embed-text  then retry: harness  →  index")
+        else:
+            print("[harness] Retry: harness  →  index")
 
 
 def _install_symlink(result: dict) -> None:

@@ -32,6 +32,19 @@ SKIP_DIRS = {
     ".venv",
     "venv",
     "production_artifacts",
+    # compiled / generated output — always exclude
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    "bin",
+    "obj",
+    "out",
+    ".gradle",
+    ".dart_tool",
+    "target",        # Rust / Maven
+    "coverage",
+    ".nyc_output",
+    "vendor",
 }
 
 

@@ -115,23 +115,38 @@ def plan_semantic_index(
     }
 
 
-def detect_ollama(host: str = "http://localhost:11434") -> list[str]:
-    """Return list of locally available Ollama model names, or [] if Ollama is unreachable."""
+_EMBED_HINTS = ("embed", "nomic", "mxbai", "bge", "e5", "all-minilm", "gte", "jina")
+
+
+def detect_ollama(host: str = "http://localhost:11434") -> tuple[list[str], list[str]]:
+    """Return (embedding_models, other_models). Empty lists if Ollama unreachable."""
     try:
         from urllib.request import urlopen as _open
         with _open(f"{host.rstrip('/')}/api/tags", timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        return [m["name"] for m in data.get("models", [])]
+        all_models = [m["name"] for m in data.get("models", [])]
+        embed  = [m for m in all_models if any(h in m.lower() for h in _EMBED_HINTS)]
+        others = [m for m in all_models if m not in embed]
+        return embed, others
     except Exception:
-        return []
+        return [], []
 
 
-def ollama_embed(texts: list[str], *, model: str = "embeddinggemma", host: str = "http://localhost:11434") -> list[list[float]]:
+def ollama_embed(texts: list[str], *, model: str, host: str = "http://localhost:11434",
+                 timeout: int = 300) -> list[list[float]]:
     payload = json.dumps({"model": model, "input": texts}).encode("utf-8")
-    request = Request(f"{host.rstrip('/')}/api/embed", data=payload, headers={"Content-Type": "application/json"})
-    with urlopen(request, timeout=120) as response:
+    request = Request(f"{host.rstrip('/')}/api/embed", data=payload,
+                      headers={"Content-Type": "application/json"})
+    with urlopen(request, timeout=timeout) as response:
         result = json.loads(response.read().decode("utf-8"))
-    return result["embeddings"]
+    embeddings = result.get("embeddings")
+    if not embeddings:
+        raise ValueError(
+            f"Model '{model}' returned no embeddings. "
+            "Use a dedicated embedding model (e.g. nomic-embed-text, mxbai-embed-large). "
+            "Run: ollama pull nomic-embed-text"
+        )
+    return embeddings
 
 
 def _chunk_repository(root: Path, *, chunk_lines: int, overlap_lines: int) -> list[dict[str, Any]]:

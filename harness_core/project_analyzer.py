@@ -150,10 +150,23 @@ def detect_project_type(root: Path) -> dict[str, Any]:
             config_file = filename
             break
 
-    # Glob-based fallback for languages without a single root config file
+    # Glob-based fallback: check root first, then one level deep, then full rglob
+    # (rglob on large repos is slow but only reached when root-level detection fails)
     if language == "unknown":
+        _SKIP = {".git", "node_modules", ".next", "dist", "build", "__pycache__",
+                 ".venv", "venv", "bin", "obj", "production_artifacts"}
         for pattern, lang, fw in _LANGUAGE_GLOB_PATTERNS:
-            matches = list(root.glob(pattern))
+            # root level
+            matches = [m for m in root.glob(pattern)
+                       if not any(p in _SKIP for p in m.parts)]
+            if not matches:
+                # one level deep (e.g. monorepo subdirs)
+                matches = [m for m in root.glob(f"*/{pattern}")
+                           if not any(p in _SKIP for p in m.parts)]
+            if not matches:
+                # full recursive (capped at first 200 candidates to stay fast)
+                matches = [m for m in root.rglob(pattern)
+                           if not any(p in _SKIP for p in m.parts)][:200]
             if matches:
                 language = lang
                 framework = fw
@@ -203,16 +216,30 @@ def detect_project_type(root: Path) -> dict[str, Any]:
             if hint in doc_text and not framework:
                 framework = fw_name
                 break
-        sln_files = list(root.glob("*.sln"))
+        _SKIP = {".git", "node_modules", ".next", "dist", "build", "__pycache__",
+                 ".venv", "venv", "bin", "obj", "production_artifacts"}
+        sln_files = [m for m in root.rglob("*.sln")
+                     if not any(p in _SKIP for p in m.parts)]
         if sln_files:
             config_file = sln_files[0].name
-            entry_points.append(sln_files[0].name)
+            entry_points.extend(str(s.relative_to(root)) for s in sln_files[:3])
+
+    # ── monorepo secondary language detection ─────────────────────────────────
+    # If primary language found, check if there's also a web frontend
+    secondary_langs: list[str] = []
+    if language == "csharp":
+        if list(root.rglob("package.json"))[:1]:
+            secondary_langs.append("typescript")
+    elif language in ("python", "go", "rust"):
+        if list(root.rglob("package.json"))[:1]:
+            secondary_langs.append("javascript")
 
     return {
         "language": language,
         "framework": framework,
         "config_file": config_file,
         "entry_points": entry_points,
+        "secondary_languages": secondary_langs,
     }
 
 
