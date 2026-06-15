@@ -195,6 +195,60 @@ def confirm(prompt: str, default: bool = True) -> bool:
         return False
 
 
+# ── prompt_input — escapable single-line text entry ──────────────────────────
+
+def prompt_input(prompt: str) -> str | None:
+    """Show a prompt and read a line of text.
+
+    Returns the typed string on Enter, or None if the user presses Esc / Ctrl-C.
+    Falls back to plain input() when stdin is not a tty.
+    """
+    if not _is_tty():
+        try:
+            return input(prompt) or None
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+    import tty, termios
+    sys.stdout.write(f"{prompt}")
+    sys.stdout.flush()
+
+    buf: list[str] = []
+    fd  = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+
+            if ch in ("\x1b", "\x03"):          # Esc or Ctrl-C → cancel
+                sys.stdout.write(_show_cursor() + "\n")
+                return None
+
+            if ch in ("\r", "\n"):              # Enter → confirm
+                sys.stdout.write(_show_cursor() + "\n")
+                return "".join(buf).strip() or None
+
+            if ch in ("\x7f", "\x08"):          # Backspace / DEL
+                if buf:
+                    buf.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+                continue
+
+            if ch == "\x1b":                    # swallow escape sequences (arrows etc.)
+                sys.stdin.read(2)
+                continue
+
+            if ch.isprintable():
+                buf.append(ch)
+                sys.stdout.write(ch)
+                sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 # ── pick2 (← →) ──────────────────────────────────────────────────────────────
 
 def pick2(

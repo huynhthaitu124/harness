@@ -291,8 +291,8 @@ def _refine_workflow(
 def _workflow_review_mode(base: "dict | None", target: Path) -> "dict | None":
     """Interactive field-by-field review with pre-filled values from inference."""
     from harness_core.workflow_steps import WORKFLOW_GRILL_QUESTIONS, answers_to_workflow
+    from harness_core.tui import prompt_input
 
-    # Build a lookup from the inferred workflow back to grill-key format
     _field_map = {
         "wf_ticket_system":  (base or {}).get("ticket_system", ""),
         "wf_ticket_url":     (base or {}).get("ticket_url", ""),
@@ -304,16 +304,15 @@ def _workflow_review_mode(base: "dict | None", target: Path) -> "dict | None":
     }
 
     print()
-    print(f"{DIM}Press Enter to keep the inferred value, or type to override.{R}\n")
+    print(f"{DIM}Enter to keep inferred value  •  type to override  •  esc to finish{R}\n")
     answers: dict[str, str] = {}
     for item in WORKFLOW_GRILL_QUESTIONS:
         key     = item["key"]
         current = _field_map.get(key, "")
         hint    = f"  {DIM}[{current}]{R}" if current else ""
-        try:
-            raw = input(f"{item['q']}{hint}\n> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
+        print(f"{item['q']}{hint}")
+        raw = prompt_input("> ")
+        if raw is None:          # Esc — stop reviewing, keep what we have
             break
         answers[key] = raw if raw else current
 
@@ -327,16 +326,16 @@ def _workflow_freetext_mode(
     analysis: dict,
 ) -> "dict | None":
     """Let user describe workflow freely; agent extracts structured fields."""
+    from harness_core.tui import prompt_input
     print()
     print(f"{DIM}Describe your ticket workflow in plain language. Examples:{R}")
     print(f"{DIM}  'We use OpenProject at op.bigin.vn. Tickets like OP-123.{R}")
     print(f"{DIM}   Branch from development as bug/OP-123. Build: msbuild PAGSWebRole.{R}")
     print(f"{DIM}   Never commit directly to development.'{R}")
     print()
-    try:
-        text = input("Your description:\n> ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
+    print("Your description (esc to cancel):")
+    text = prompt_input("> ")
+    if text is None:
         return base
 
     if not text:
@@ -1457,7 +1456,7 @@ def _pick_center(target: Path) -> None:
 
 
 def launch_menu(target: Path) -> None:
-    from harness_core.tui import MenuItem, menu, confirm
+    from harness_core.tui import MenuItem, menu, confirm, prompt_input
 
     items = [MenuItem(key=k, label=lbl, desc=desc) for k, lbl, desc in _MENU_ITEMS]
 
@@ -1477,19 +1476,11 @@ def launch_menu(target: Path) -> None:
             elif chosen == "update":
                 run_update(target)
             elif chosen == "run":
-                try:
-                    task = input(f"  {DIM}Task description:{R} ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    continue
+                task = prompt_input(f"  {DIM}Task (esc=cancel):{R} ")
                 if task:
                     run_ticket(target, task, ticket_id=None, agent_name=None)
             elif chosen == "rag-pack":
-                try:
-                    query = input(f"  {DIM}Task/query:{R} ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    continue
+                query = prompt_input(f"  {DIM}Task/query (esc=cancel):{R} ")
                 if query:
                     run_rag_pack(target, query=query)
             elif chosen == "mcp register":
