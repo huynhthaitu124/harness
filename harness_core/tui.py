@@ -90,6 +90,15 @@ def menu(title: str, items: list[MenuItem], version: str = "",
     # pre-compute label column width for compact mode
     _lcol = max((len(item.label) for item in items), default=0) + 2
 
+    # Truncate descriptions so no line wraps (wrapping makes line_count wrong → title duplicates)
+    import shutil as _shutil
+    _term_w = _shutil.get_terminal_size((80, 24)).columns
+    # prefix width: 4 spaces + label padded to _lcol + 2 sep = _lcol + 6
+    _desc_max = max(10, _term_w - _lcol - 6)
+
+    def _td(s: str) -> str:
+        return s[:_desc_max - 1] + "…" if len(s) > _desc_max else s
+
     idx        = 0
     line_count = 0
 
@@ -104,11 +113,12 @@ def menu(title: str, items: list[MenuItem], version: str = "",
         for i, item in enumerate(items):
             active = (i == idx)
             if compact:
-                desc_part = f"  {DIM}{item.desc}{RESET}" if item.desc else ""
+                desc = _td(item.desc) if item.desc else ""
+                desc_part = f"  {DIM}{desc}{RESET}" if desc else ""
                 if active:
                     out.append(f"  {CYAN}{BOLD}▸ {item.label:<{_lcol}}{RESET}{desc_part}")
                 else:
-                    out.append(f"    {DIM}{item.label:<{_lcol}}{RESET}{DIM}{item.desc}{RESET}" if item.desc
+                    out.append(f"    {DIM}{item.label:<{_lcol}}{RESET}{DIM}{desc}{RESET}" if desc
                                else f"    {DIM}{item.label}{RESET}")
             else:
                 if active:
@@ -116,7 +126,7 @@ def menu(title: str, items: list[MenuItem], version: str = "",
                 else:
                     out.append(f"    {DIM}{item.label}{RESET}")
                 if item.desc:
-                    out.append(f"    {DIM}{item.desc}{RESET}")
+                    out.append(f"    {DIM}{_td(item.desc)}{RESET}")
                 out.append("")
         out.append(f"{DIM}↑/↓ navigate  •  enter select  •  esc quit{RESET}")
         return out
