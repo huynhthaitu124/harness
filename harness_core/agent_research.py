@@ -18,68 +18,256 @@ _EMBED_HINTS = ("embed", "nomic", "mxbai", "bge", "e5", "minilm", "gte", "jina",
 
 # ── Agent detection ────────────────────────────────────────────────────────────
 
-def detect_agent_clis() -> list[dict[str, Any]]:
-    """Detect available agent CLIs + local Ollama chat models.
+def _ollama_running() -> bool:
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2):
+            return True
+    except Exception:
+        return False
 
-    Returns list of dicts: {name, label, available, detail, model}
-    - name:      identifier used to invoke  (e.g. "claude", "ollama:llama3.2")
-    - label:     human-readable display string
-    - available: bool — whether the CLI/model can actually be invoked
-    - detail:    path, install hint, or Ollama model tag
-    - model:     only set for Ollama agents
-    """
-    agents: list[dict[str, Any]] = []
 
-    # Claude CLI  (claude-code or claude)
-    claude_path = shutil.which("claude")
-    agents.append({
-        "name":      "claude",
-        "label":     "Claude (claude CLI)",
-        "available": bool(claude_path),
-        "detail":    claude_path or "not found — install: npm i -g @anthropic-ai/claude-code",
-        "model":     None,
-    })
-
-    # Codex CLI
-    codex_path = shutil.which("codex")
-    agents.append({
-        "name":      "codex",
-        "label":     "Codex (OpenAI codex CLI)",
-        "available": bool(codex_path),
-        "detail":    codex_path or "not found — install: npm i -g @openai/codex",
-        "model":     None,
-    })
-
-    # Antigravity CLI
-    ag_path = shutil.which("antigravity")
-    agents.append({
-        "name":      "antigravity",
-        "label":     "Antigravity CLI",
-        "available": bool(ag_path),
-        "detail":    ag_path or "not found",
-        "model":     None,
-    })
-
-    # Local Ollama chat/code models (not embedding-only)
+def _ollama_chat_models() -> list[str]:
     try:
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2) as resp:
             data = json.loads(resp.read())
-        chat_models = [
+        return [
             m["name"] for m in data.get("models", [])
             if not any(h in m["name"].lower() for h in _EMBED_HINTS)
         ]
+    except Exception:
+        return []
+
+
+def _claude_authed() -> bool:
+    """Return True if claude CLI has valid auth configured."""
+    try:
+        r = subprocess.run(
+            ["claude", "auth", "status"],
+            capture_output=True, text=True, timeout=10,
+        )
+        out = (r.stdout + r.stderr).lower()
+        return "logged in" in out or "authenticated" in out or r.returncode == 0
+    except Exception:
+        return False
+
+
+def detect_agent_clis() -> list[dict[str, Any]]:
+    """Detect available agent CLIs + local Ollama chat models.
+
+    Each entry:
+      name          identifier used to invoke  (e.g. "claude", "ollama:llama3.2")
+      label         human-readable display string
+      available     bool — installed AND ready to use (auth ok, model pulled)
+      installed     bool — binary / runtime exists on this machine
+      authed        bool — auth credentials configured (Claude / Codex)
+      detail        short status string for TUI display
+      model         only set for Ollama model entries
+      install_how   "npm" | "brew" | "url" | "ollama_pull" | None
+      install_pkg   package/formula name to install
+      auth_cmd      list[str] command to run for auth, or None
+      auth_url      URL to open for auth, or None
+      auth_note     extra plain-text instruction shown after install
+    """
+    agents: list[dict[str, Any]] = []
+    npm_ok    = bool(shutil.which("npm"))
+    brew_ok   = bool(shutil.which("brew"))
+
+    # ── Claude Code CLI ────────────────────────────────────────────────────────
+    claude_path = shutil.which("claude")
+    claude_inst = bool(claude_path)
+    claude_auth = _claude_authed() if claude_inst else False
+    agents.append({
+        "name":        "claude",
+        "label":       "Claude Code",
+        "available":   claude_inst and claude_auth,
+        "installed":   claude_inst,
+        "authed":      claude_auth,
+        "detail":      (claude_path if claude_inst and claude_auth
+                        else ("installed — needs login" if claude_inst
+                              else ("npm i -g @anthropic-ai/claude-code" if npm_ok
+                                    else "requires Node/npm"))),
+        "model":       None,
+        "install_how": "npm" if npm_ok else None,
+        "install_pkg": "@anthropic-ai/claude-code",
+        "auth_cmd":    ["claude", "auth", "login"],
+        "auth_url":    "https://claude.ai/settings/cli",
+        "auth_note":   "Opens your browser to log in with your Anthropic account.",
+    })
+
+    # ── Codex CLI ─────────────────────────────────────────────────────────────
+    codex_path = shutil.which("codex")
+    codex_inst = bool(codex_path)
+    # Codex auth = OPENAI_API_KEY is set
+    import os as _os
+    codex_auth = bool(_os.environ.get("OPENAI_API_KEY"))
+    agents.append({
+        "name":        "codex",
+        "label":       "Codex (OpenAI)",
+        "available":   codex_inst and codex_auth,
+        "installed":   codex_inst,
+        "authed":      codex_auth,
+        "detail":      (codex_path if codex_inst and codex_auth
+                        else ("installed — set OPENAI_API_KEY" if codex_inst
+                              else ("npm i -g @openai/codex" if npm_ok
+                                    else "requires Node/npm"))),
+        "model":       None,
+        "install_how": "npm" if npm_ok else None,
+        "install_pkg": "@openai/codex",
+        "auth_cmd":    None,
+        "auth_url":    "https://platform.openai.com/api-keys",
+        "auth_note":   "Create an API key at platform.openai.com then:\nexport OPENAI_API_KEY=sk-...",
+    })
+
+    # ── Antigravity CLI ───────────────────────────────────────────────────────
+    ag_path = shutil.which("antigravity")
+    ag_inst  = bool(ag_path)
+    agents.append({
+        "name":        "antigravity",
+        "label":       "Antigravity",
+        "available":   ag_inst,
+        "installed":   ag_inst,
+        "authed":      ag_inst,
+        "detail":      ag_path or "not found",
+        "model":       None,
+        "install_how": None,
+        "install_pkg": None,
+        "auth_cmd":    None,
+        "auth_url":    None,
+        "auth_note":   "",
+    })
+
+    # ── Ollama (platform + models) ─────────────────────────────────────────────
+    ollama_path    = shutil.which("ollama")
+    ollama_inst    = bool(ollama_path)
+    ollama_running = _ollama_running() if ollama_inst else False
+    chat_models    = _ollama_chat_models() if ollama_running else []
+
+    if not ollama_inst:
+        # Offer to install Ollama itself — it will let the user pull a model next
+        agents.append({
+            "name":        "__install_ollama__",
+            "label":       "Local model (Ollama — not installed)",
+            "available":   False,
+            "installed":   False,
+            "authed":      True,
+            "detail":      "brew install ollama" if brew_ok else "download from ollama.com",
+            "model":       None,
+            "install_how": "brew" if brew_ok else "url",
+            "install_pkg": "ollama",
+            "auth_cmd":    None,
+            "auth_url":    "https://ollama.com/download",
+            "auth_note":   "",
+        })
+    elif not chat_models:
+        # Ollama installed but no chat models — offer to pull one
+        agents.append({
+            "name":        "__pull_ollama_model__",
+            "label":       "Local model (Ollama — no models pulled yet)",
+            "available":   False,
+            "installed":   True,
+            "authed":      True,
+            "detail":      "pull a model with: ollama pull qwen3:8b",
+            "model":       None,
+            "install_how": "ollama_pull",
+            "install_pkg": None,
+            "auth_cmd":    None,
+            "auth_url":    None,
+            "auth_note":   "",
+        })
+    else:
         for m in chat_models[:4]:
             agents.append({
-                "name":      f"ollama:{m}",
-                "label":     f"Local — {m}",
-                "available": True,
-                "detail":    "Ollama local model (offline, no API cost)",
-                "model":     m,
+                "name":        f"ollama:{m}",
+                "label":       f"Local — {m}",
+                "available":   True,
+                "installed":   True,
+                "authed":      True,
+                "detail":      "offline · no API cost",
+                "model":       m,
+                "install_how": None,
+                "install_pkg": None,
+                "auth_cmd":    None,
+                "auth_url":    None,
+                "auth_note":   "",
             })
-    except Exception:
-        pass
 
     return agents
+
+
+# ── Install / auth helpers ─────────────────────────────────────────────────────
+
+def install_agent_cli(agent: dict[str, Any]) -> bool:
+    """Install the agent CLI. Returns True if successful."""
+    how = agent.get("install_how")
+    pkg = agent.get("install_pkg", "")
+
+    if how == "npm":
+        cmd = ["npm", "install", "-g", pkg]
+    elif how == "brew":
+        cmd = ["brew", "install", pkg]
+    elif how == "url":
+        # Can't install automatically — open browser
+        url = agent.get("auth_url") or "https://ollama.com/download"
+        try:
+            subprocess.run(["open", url], check=False)
+        except Exception:
+            pass
+        return False
+    elif how == "ollama_pull":
+        # Handled separately via _pick_ollama_model
+        return False
+    else:
+        return False
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1)
+        import sys as _sys
+        for line in proc.stdout or []:
+            _sys.stdout.write(f"    {line}")
+            _sys.stdout.flush()
+        proc.wait(timeout=300)
+        print()
+        return proc.returncode == 0
+    except Exception as exc:
+        print(f"    install failed: {exc}")
+        return False
+
+
+def run_agent_auth(agent: dict[str, Any]) -> bool:
+    """Run the auth flow for an agent. Returns True when auth appears complete."""
+    import sys as _sys
+
+    auth_cmd  = agent.get("auth_cmd")
+    auth_url  = agent.get("auth_url")
+    auth_note = agent.get("auth_note", "")
+
+    if auth_note:
+        for line in auth_note.splitlines():
+            _sys.stdout.write(f"  · {line}\n")
+        _sys.stdout.flush()
+
+    if auth_url and not auth_cmd:
+        # Can't do it programmatically — open browser and tell user
+        try:
+            subprocess.run(["open", auth_url], check=False)
+        except Exception:
+            pass
+        _sys.stdout.write(f"  → opened {auth_url}\n")
+        _sys.stdout.flush()
+        input("  Press Enter once you've completed authentication... ")
+        return True
+
+    if auth_cmd:
+        # Run auth command interactively (don't capture — it needs TTY for browser flow)
+        try:
+            subprocess.run(auth_cmd, check=False)
+            return True
+        except Exception as exc:
+            _sys.stdout.write(f"  ! auth command failed: {exc}\n")
+            return False
+
+    return True  # no auth needed
 
 
 # ── Research prompt ────────────────────────────────────────────────────────────

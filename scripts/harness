@@ -55,10 +55,16 @@ HARNESS_PATHS = [".harness", "HARNESS.md", "HARNESS.html"]
 def _select_research_agent(target: Path) -> str:
     """Interactive agent selection — shown FIRST in harness init.
 
+    Shows ALL agents (installed + not installed). If user picks one that is not
+    yet installed/authed, runs the install and auth flow before returning.
+
     Returns an agent name (e.g. "claude", "ollama:llama3.2") or "skip".
     """
-    from harness_core.agent_research import detect_agent_clis
-    from harness_core.tui import MenuItem, menu
+    from harness_core.agent_research import (
+        detect_agent_clis, install_agent_cli, run_agent_auth,
+        _ollama_chat_models, _ollama_running,
+    )
+    from harness_core.tui import MenuItem, menu, confirm
 
     print()
     print(f"  {B}Select research agent{R}")
@@ -66,35 +72,163 @@ def _select_research_agent(target: Path) -> str:
     _info("sections for HARNESS.html: architecture, modules, conventions, workflow.")
     print()
 
-    agents    = detect_agent_clis()
-    available = [a for a in agents if a["available"]]
-    missing   = [a for a in agents if not a["available"] and a["model"] is None]
+    while True:
+        agents = detect_agent_clis()
+        items: list[MenuItem] = []
 
-    if missing:
-        labels = ", ".join(a["label"].split("(")[0].strip() for a in missing)
-        _info(f"{DIM}Not installed: {labels}{R}")
-        print()
+        for a in agents:
+            if a["available"]:
+                icon  = f"{G}✓{R}"
+                label = a["label"]
+            elif a.get("installed") and not a.get("authed"):
+                icon  = f"{Y}!{R}"
+                label = a["label"] + "  (needs login)"
+            else:
+                icon  = f"{C}↓{R}"
+                label = a["label"] + "  (not installed)"
 
-    items: list[MenuItem] = []
-    for a in available:
-        detail = a["detail"]
-        if len(detail) > 60:
-            detail = detail[:57] + "..."
-        items.append(MenuItem(key=a["name"], label=a["label"], desc=f"✓  {detail}"))
-    items.append(MenuItem(key="skip", label="Skip  (standard sections only)",
-                          desc="generate HARNESS.html without agent-driven deep research"))
+            detail = a["detail"]
+            if len(detail) > 62:
+                detail = detail[:59] + "..."
 
-    if not available:
-        _warn("no agent CLIs detected — skipping research")
-        _info("to enable: install claude CLI or start Ollama with a chat model")
-        print()
-        return "skip"
+            items.append(MenuItem(
+                key=a["name"],
+                label=label,
+                desc=f"{icon}  {detail}",
+            ))
 
-    chosen = menu("Choose research agent:", items)
-    if not chosen:
-        _info("no agent selected — using standard sections only")
-        return "skip"
-    return chosen
+        items.append(MenuItem(
+            key="skip",
+            label="Skip",
+            desc=f"{DIM}generate HARNESS.html with standard sections only{R}",
+        ))
+
+        chosen = menu("Choose research agent:", items)
+        if not chosen:
+            _info("no agent selected — using standard sections only")
+            return "skip"
+
+        if chosen == "skip":
+            return "skip"
+
+        # Find the chosen agent entry
+        agent = next((a for a in agents if a["name"] == chosen), None)
+        if agent is None:
+            return "skip"
+
+        # Already fully available — done
+        if agent["available"]:
+            return chosen
+
+        # ── Needs install ────────────────────────────────────────────────────
+        if not agent["installed"]:
+            how = agent.get("install_how")
+
+            if how == "url":
+                url = agent.get("auth_url") or "https://ollama.com/download"
+                print()
+                _warn(f"{agent['label']} cannot be auto-installed on this system.")
+                _info(f"Download it from: {B}{url}{R}")
+                try:
+                    import subprocess as _sp
+                    _sp.run(["open", url], check=False)
+                    _info("Opened download page in your browser.")
+                except Exception:
+                    pass
+                input(f"\n  Press Enter once {agent['label']} is installed... ")
+                print()
+                continue  # re-detect and redisplay menu
+
+            if how in ("npm", "brew"):
+                pkg  = agent.get("install_pkg", "")
+                cmd_str = f"{'npm install -g' if how == 'npm' else 'brew install'} {pkg}"
+                print()
+                _info(f"{agent['label']} is not installed.")
+                if not confirm(f"Install now via:  {B}{cmd_str}{R}  ?", default=True):
+                    continue
+
+                print()
+                _info(f"Installing  {B}{pkg}{R} ...")
+                ok = install_agent_cli(agent)
+                if not ok:
+                    _warn("install failed — choose another agent or fix manually")
+                    input("  Press Enter to continue... ")
+                    continue
+                _ok(f"{agent['label']} installed")
+                # Refresh PATH so shutil.which picks up the new binary
+                import importlib, harness_core.agent_research as _ar
+                importlib.reload(_ar)
+                print()
+
+            elif how == "ollama_pull":
+                print()
+                _info("Ollama is installed but no chat models are pulled yet.")
+                _pick_ollama_model_to_pull()
+                print()
+                continue
+
+            else:
+                _warn(f"Don't know how to install {agent['label']} automatically.")
+                input("  Press Enter to choose a different agent... ")
+                continue
+
+        # ── Needs auth ───────────────────────────────────────────────────────
+        if agent["installed"] and not agent.get("authed"):
+            print()
+            _info(f"{agent['label']} is installed but needs authentication.")
+            ok = run_agent_auth(agent)
+            if not ok:
+                _warn("auth failed or cancelled")
+                input("  Press Enter to choose a different agent... ")
+                continue
+            _ok(f"{agent['label']} authenticated")
+            print()
+
+        # Re-run detection — if now available, return; else loop
+        refreshed = next((a for a in detect_agent_clis() if a["name"] == chosen), None)
+        if refreshed and refreshed["available"]:
+            return chosen
+        _warn("agent still not ready — check install/auth and try again")
+        input("  Press Enter to retry... ")
+
+
+def _pick_ollama_model_to_pull() -> None:
+    """Let user pick and pull a chat model from the Ollama catalogue."""
+    from harness_core.tui import MenuItem, menu
+
+    _LLM_CATALOGUE = [
+        ("qwen3:8b",         "5.2 GB", "fast reasoning, Vietnamese + EN"),
+        ("qwen2.5-coder:7b", "4.7 GB", "code-optimised, context extraction"),
+        ("llama3.2:3b",      "2.0 GB", "very fast, minimal RAM"),
+        ("gemma3:4b",        "3.3 GB", "Google model, instruction following"),
+        ("phi4-mini:3.8b",   "2.5 GB", "compact reasoning, low footprint"),
+        ("mistral:7b",       "4.1 GB", "general-purpose, strong retrieval"),
+    ]
+
+    import subprocess
+    items = [MenuItem(key=name, label=name, desc=f"{size}  —  {desc}")
+             for name, size, desc in _LLM_CATALOGUE]
+    items.append(MenuItem(key="skip", label="skip", desc="don't pull a model now"))
+
+    chosen = menu("Select a model to pull:", items)
+    if not chosen or chosen == "skip":
+        _info("no model selected")
+        return
+
+    _info(f"Pulling  {B}{chosen}{R}  from Ollama registry ...")
+    import sys as _sys
+    proc = subprocess.Popen(["ollama", "pull", chosen],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    for line in proc.stdout or []:
+        _sys.stdout.write(f"    {line}")
+        _sys.stdout.flush()
+    proc.wait()
+    print()
+    if proc.returncode == 0:
+        _ok(f"{chosen} ready")
+    else:
+        _warn(f"pull failed for {chosen}")
 
 
 def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
