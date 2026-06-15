@@ -285,28 +285,70 @@ def detect_project_type(root: Path) -> dict[str, Any]:
                 break
 
     if language == "csharp":
-        doc_text = ""
-        for docfile in ("AGENTS.md", "CLAUDE.md", "README.md"):
-            for p in [root / docfile] + list(root.glob(f"*/{docfile}"))[:2]:
-                if p.exists():
-                    try:
-                        doc_text += p.read_text(encoding="utf-8", errors="ignore").lower()
-                    except Exception:
-                        pass
-        for hint, fw_name in _CSHARP_FRAMEWORK_HINTS:
-            if hint in doc_text and not framework:
-                framework = fw_name
-                break
-        sln_matches = primary_info["matches"]
-        sln_files   = [m for m in sln_matches if m.suffix == ".sln"]
+        csproj_files = [m for m in primary_info["matches"] if m.suffix == ".csproj"]
+        sln_files    = [m for m in primary_info["matches"] if m.suffix == ".sln"]
+
+        # Detect framework from .csproj SDK attribute (most reliable signal)
+        if not framework:
+            _SDK_TO_FW = {
+                "microsoft.net.sdk.web":    "asp.net core",
+                "microsoft.net.sdk.worker": "asp.net core worker",
+                "microsoft.net.sdk.blazorwebassembly": "blazor",
+                "microsoft.net.sdk.maui":   "maui",
+            }
+            for csproj in csproj_files[:20]:
+                try:
+                    content = csproj.read_text(encoding="utf-8", errors="ignore").lower()
+                    for sdk_key, fw_name in _SDK_TO_FW.items():
+                        if sdk_key in content:
+                            framework = fw_name
+                            break
+                except Exception:
+                    pass
+                if framework:
+                    break
+
+        # Fallback: scan doc files for framework hints
+        if not framework:
+            doc_text = ""
+            for docfile in ("AGENTS.md", "CLAUDE.md", "README.md"):
+                for p in [root / docfile] + list(root.glob(f"*/{docfile}"))[:2]:
+                    if p.exists():
+                        try:
+                            doc_text += p.read_text(encoding="utf-8", errors="ignore").lower()
+                        except Exception:
+                            pass
+            for hint, fw_name in _CSHARP_FRAMEWORK_HINTS:
+                if hint in doc_text:
+                    framework = fw_name
+                    break
+
+        # entry_points: prefer API/Gateway/Service projects, skip tests/migrations
+        _TEST_HINTS   = ("test", "spec", "mock", "fixture")
+        _SKIP_HINTS   = ("dbmigrat", "migration", "seed", "scaffold")
+        _ENTRY_HINTS  = (".api", "gateway", "worker", "host")   # exact entry-point markers
+        _LAYER_HINTS  = ("application", "domain", "infrastructure", "persistence",
+                         "data", "shared", "common", "contracts", "abstractions")
+
+        def _csproj_rank(p: Path) -> int:
+            n = p.stem.lower()
+            if any(h in n for h in _TEST_HINTS + _SKIP_HINTS):
+                return 0                          # skip entirely
+            if any(n.endswith(h) or h in n for h in _ENTRY_HINTS):
+                return 3                          # real entry point
+            if any(h in n for h in _LAYER_HINTS):
+                return 1                          # internal layer — keep but low priority
+            return 2                              # other service project
+
         if sln_files:
             config_file = sln_files[0].name
             entry_points.extend(str(s.relative_to(root)) for s in sln_files[:3])
-        elif primary_info["matches"]:
-            entry_points.extend(
-                str(m.relative_to(root)) for m in primary_info["matches"][:3]
-                if m.suffix == ".csproj"
+        else:
+            ranked_csprojs = sorted(
+                [c for c in csproj_files if _csproj_rank(c) > 0],
+                key=lambda p: -_csproj_rank(p),
             )
+            entry_points.extend(str(p.relative_to(root)) for p in ranked_csprojs[:5])
 
     # ── secondary languages (monorepo) ────────────────────────────────────────
     secondary_langs: list[str] = []
