@@ -46,6 +46,7 @@ Shared tools exposed by MCP:
 - `harness_local_model_gate`
 - `harness_plan_local_worker`
 - `harness_plan_structured_local_worker`
+- `harness_validate_structured_local_output`
 - `harness_scaffold_capability`
 - `harness_list_capabilities`
 - `harness_run_growth_cycle`
@@ -56,11 +57,13 @@ Shared tools exposed by MCP:
 - `harness_experiment_report`
 - `harness_ingest_claude_experiment`
 - `harness_ingest_codex_experiment`
+- `harness_ingest_usage`
 - `harness_hybrid_context_pack`
 - `harness_init_research_registry`
 - `harness_due_research_sources`
 - `harness_record_source_check`
 - `harness_refresh_research_sources`
+- `harness_research_refresh`
 - `harness_plan_semantic_index`
 - `harness_evaluate_hybrid_retrieval`
 - `harness_readiness_report`

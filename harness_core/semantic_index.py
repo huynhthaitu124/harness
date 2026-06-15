@@ -8,6 +8,7 @@ from typing import Any, Callable
 from urllib.request import Request, urlopen
 
 from harness_core.context_budget import iter_text_files
+from harness_core.local_capabilities import choose_embedding_model
 from harness_core.local_model_gate import local_model_decision
 
 Embedder = Callable[[list[str]], list[list[float]]]
@@ -100,31 +101,35 @@ def plan_semantic_index(
     *,
     machine: dict[str, Any],
     installed_models: list[str],
-    model: str = "embeddinggemma",
+    model: str | None = None,
 ) -> dict[str, Any]:
+    choice = choose_embedding_model(installed_models, requested_model=model)
+    selected = choice["model"]
     gate = local_model_decision(machine, "light")
     if not gate["allow"]:
         return {
             "mode": "hybrid_lexical",
             "use_ollama": False,
-            "model": model,
+            "model": selected,
+            "embedding_choice": choice,
             "reasons": gate["reasons"],
             "fallback": "Use harness_hybrid_context_pack until live memory and swap improve.",
         }
-    installed = any(name == model or name.startswith(f"{model}:") for name in installed_models)
-    if not installed:
+    if not choice["installed"]:
         return {
             "mode": "ollama_embedding_setup",
             "use_ollama": False,
-            "model": model,
+            "model": selected,
+            "embedding_choice": choice,
             "needs_model": True,
-            "pull_command": f"ollama pull {model}",
+            "pull_command": f"ollama pull {selected}",
             "reasons": gate["reasons"],
         }
     return {
         "mode": "ollama_semantic_index",
         "use_ollama": True,
-        "model": model,
+        "model": selected,
+        "embedding_choice": choice,
         "max_context_tokens": gate["max_context_tokens"],
         "reasons": gate["reasons"],
     }

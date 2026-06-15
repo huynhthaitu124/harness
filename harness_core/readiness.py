@@ -36,7 +36,24 @@ def build_readiness_report(
         else:
             status = "ready"
             reasons.append("CLI and shared harness are available")
-        centers[center] = {"status": status, "reasons": reasons, "probe": probe, "quota": quota}
+        capabilities: dict[str, Any] = {}
+        if center == "antigravity":
+            capabilities = {
+                "token_metering": "manual_or_unavailable",
+                "rag_pack_fallback": True,
+                "mcp_native": bool(probe.get("mcp_native_supported", False)),
+            }
+            if probe.get("legacy_gemini_cli", False):
+                reasons.append("legacy Gemini CLI detected; prefer Antigravity CLI")
+            if probe.get("mcp_native_supported") is False:
+                reasons.append("native MCP not confirmed; use shared rag-pack fallback")
+        centers[center] = {
+            "status": status,
+            "reasons": reasons,
+            "probe": probe,
+            "quota": quota,
+            "capabilities": capabilities,
+        }
 
     report: dict[str, Any] = {
         "preferred_center": state.get("preferred_center", "auto"),

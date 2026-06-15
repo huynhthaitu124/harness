@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from harness_core.structured_worker import plan_structured_local_worker  # noqa: E402
+from harness_core.structured_worker import plan_structured_local_worker, validate_structured_worker_output  # noqa: E402
 
 
 def read_machine_state() -> dict[str, int]:
@@ -25,8 +25,14 @@ def read_machine_state() -> dict[str, int]:
 
 
 def main() -> int:
+    if len(sys.argv) >= 4 and sys.argv[1] == "validate":
+        schema = json.loads(sys.argv[2])
+        raw_output = Path(sys.argv[3]).read_text(encoding="utf-8")
+        result = validate_structured_worker_output(raw_output, schema)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result["valid"] else 1
     if len(sys.argv) < 4:
-        print("usage: harness-structured-worker <light|complex|heavy|rag-large> <schema-json> <task>", file=sys.stderr)
+        print("usage: harness-structured-worker <light|complex|heavy|rag-large> <schema-json> <task> | validate <schema-json> <output-file>", file=sys.stderr)
         return 2
     complexity = sys.argv[1]
     schema = json.loads(sys.argv[2])

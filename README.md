@@ -49,9 +49,16 @@ Run `harness` with no arguments inside any project to open the interactive menu.
 | `harness center get` | Show the current center |
 | `harness rag-pack "<task>" [--ticket ID]` | Build a task-keyed RAG context pack; symlinked as `last-rag-pack.md` for backward compat |
 | `harness run "<task>" [--ticket ID]` | Build RAG pack for a task and launch the selected agent with context pre-loaded |
+| `harness local plan "<task>"` | Plan Ollama embedding + structured local worker usage before spending cloud tokens |
+| `harness research-refresh` | Refresh official Codex, Claude, Ollama, MCP, and Antigravity source registry evidence |
+| `harness readiness` | Show live Codex, Claude, Antigravity, and local Ollama readiness |
+| `harness usage report` | Summarize measured usage from `production_artifacts/usage.jsonl` |
+| `harness usage ingest-claude <file>` | Parse Claude JSON usage and append it to the shared ledger |
+| `harness usage ingest-codex <file>` | Parse Codex JSONL usage and append it to the shared ledger |
 | `harness index` | Build / rebuild the local BM25 + semantic RAG index |
 | `harness mcp status` | Show MCP registration state across all agent configs |
 | `harness mcp register` | Register harness MCP server in all installed agent configs |
+| `harness mcp security` | Audit MCP command-policy and 2025-11-25 safety posture |
 | `harness mcp unregister` | Remove harness from all agent config files |
 | `harness eject` | Remove harness config from the project, keep `.harness/` data |
 

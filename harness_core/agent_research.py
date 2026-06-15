@@ -89,9 +89,15 @@ def detect_agent_clis() -> list[dict[str, Any]]:
         "model":       None,
         "install_how": "npm" if npm_ok else None,
         "install_pkg": "@anthropic-ai/claude-code",
-        "auth_cmd":    ["claude", "auth", "login"],
-        "auth_url":    "https://claude.ai/settings/cli",
-        "auth_note":   "Opens your browser to log in with your Anthropic account.",
+        "auth_cmd":      ["claude", "auth", "login"],
+        "auth_url":      "https://claude.ai/settings/cli",
+        "auth_note":     "Opens your browser — sign in with your Anthropic account.",
+        "docs_url":      "https://docs.anthropic.com/claude-code",
+        "install_steps": [
+            "npm install -g @anthropic-ai/claude-code",
+            "claude auth login  # opens browser — sign in with Anthropic",
+            "claude --version  # verify",
+        ],
     })
 
     # ── Codex CLI ─────────────────────────────────────────────────────────────
@@ -113,27 +119,62 @@ def detect_agent_clis() -> list[dict[str, Any]]:
         "model":       None,
         "install_how": "npm" if npm_ok else None,
         "install_pkg": "@openai/codex",
-        "auth_cmd":    None,
-        "auth_url":    "https://platform.openai.com/api-keys",
-        "auth_note":   "Create an API key at platform.openai.com then:\nexport OPENAI_API_KEY=sk-...",
+        "auth_cmd":      None,
+        "auth_url":      "https://platform.openai.com/api-keys",
+        "auth_note":     "Create an API key at platform.openai.com, then add to your shell:\n"
+                         "export OPENAI_API_KEY=sk-...\n"
+                         "Add to ~/.zshrc or ~/.bashrc to persist across sessions.",
+        "docs_url":      "https://github.com/openai/codex-cli",
+        "install_steps": [
+            "npm install -g @openai/codex",
+            "# Get API key at https://platform.openai.com/api-keys",
+            "export OPENAI_API_KEY=sk-...  # add to ~/.zshrc to persist",
+            "codex --version  # verify",
+        ],
     })
 
     # ── Antigravity CLI ───────────────────────────────────────────────────────
-    ag_path = shutil.which("antigravity")
+    ag_path  = shutil.which("antigravity")
     ag_inst  = bool(ag_path)
+    ag_auth  = False
+    if ag_inst:
+        try:
+            _r = subprocess.run(
+                ["antigravity", "auth", "status"],
+                capture_output=True, text=True, timeout=8,
+            )
+            ag_auth = _r.returncode == 0 or "logged" in (_r.stdout + _r.stderr).lower()
+        except Exception:
+            ag_auth = False  # require explicit auth confirmation
+    ag_version = ""
+    if ag_inst:
+        try:
+            _vr = subprocess.run(
+                ["antigravity", "--version"], capture_output=True, text=True, timeout=5,
+            )
+            ag_version = (_vr.stdout + _vr.stderr).strip().split("\n")[0][:40]
+        except Exception:
+            pass
     agents.append({
-        "name":        "antigravity",
-        "label":       "Antigravity",
-        "available":   ag_inst,
-        "installed":   ag_inst,
-        "authed":      ag_inst,
-        "detail":      ag_path or "not found",
-        "model":       None,
-        "install_how": None,
-        "install_pkg": None,
-        "auth_cmd":    None,
-        "auth_url":    None,
-        "auth_note":   "",
+        "name":          "antigravity",
+        "label":         "Antigravity CLI",
+        "available":     ag_inst and ag_auth,
+        "installed":     ag_inst,
+        "authed":        ag_auth,
+        "detail":        (ag_version or ag_path or "ready") if ag_inst
+                         else "download from antigravity.google",
+        "model":         None,
+        "install_how":   "url",
+        "install_pkg":   None,
+        "auth_cmd":      ["antigravity", "auth", "login"],
+        "auth_url":      "https://antigravity.google/download#antigravity-cli",
+        "auth_note":     "Sign in with your Google account to authorise Antigravity CLI.",
+        "docs_url":      "https://antigravity.google/download#antigravity-cli",
+        "install_steps": [
+            "# Download from https://antigravity.google/download#antigravity-cli",
+            "antigravity auth login  # opens browser — sign in with Google",
+            "antigravity --version  # verify",
+        ],
     })
 
     # ── Ollama (platform + models) ─────────────────────────────────────────────

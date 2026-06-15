@@ -356,6 +356,330 @@ def _workflow_freetext_mode(
         return base
 
 
+def _codex_auth_flow() -> bool:
+    """Prompt for OPENAI_API_KEY, persist to ~/.zshrc, return True if key was set."""
+    from harness_core.tui import prompt_input
+    import os as _os
+
+    _info("Codex needs an OpenAI API key.")
+    _info(f"  Get one at:  {B}https://platform.openai.com/api-keys{R}")
+    try:
+        import subprocess as _sp
+        _sp.run(["open", "https://platform.openai.com/api-keys"], check=False)
+        _info("Opened API key page in your browser.")
+    except Exception:
+        pass
+    print()
+    api_key = prompt_input("  Paste OPENAI_API_KEY here (esc to skip) › ")
+    if not api_key:
+        _info("Skipped — add manually:  export OPENAI_API_KEY=sk-...")
+        return False
+
+    api_key = api_key.strip()
+    _os.environ["OPENAI_API_KEY"] = api_key  # active for this session immediately
+
+    zshrc  = Path.home() / ".zshrc"
+    bashrc = Path.home() / ".bashrc"
+    marker = "OPENAI_API_KEY"
+
+    for rc_file in (zshrc, bashrc):
+        if rc_file.exists():
+            try:
+                existing = rc_file.read_text(encoding="utf-8")
+                if marker not in existing:
+                    with rc_file.open("a", encoding="utf-8") as f:
+                        f.write(f'\nexport OPENAI_API_KEY="{api_key}"  # added by harness agents\n')
+                    _ok(f"API key written to {rc_file.name}")
+                else:
+                    _info(f"{marker} already in {rc_file.name} — updated env for this session only")
+            except OSError:
+                _warn(f"Could not write to {rc_file}")
+            break
+    else:
+        _warn("No ~/.zshrc or ~/.bashrc found — key is set for this session only")
+
+    _ok("OPENAI_API_KEY set")
+    return True
+
+
+def run_agents_cmd(target: Path) -> int:  # noqa: C901
+    """harness agents — show, install, configure, and set all agent CLIs."""
+    from harness_core.agent_research import (
+        detect_agent_clis, install_agent_cli, run_agent_auth,
+        _ollama_chat_models, _ollama_running,
+    )
+    from harness_core.tui import MenuItem, menu, confirm, prompt_input
+
+    # Read current center from state
+    state_path = target / ".harness" / "state.json"
+    center = "auto"
+    if state_path.exists():
+        try:
+            center = json.loads(state_path.read_text(encoding="utf-8")).get("preferred_center", "auto")
+        except Exception:
+            pass
+
+    def _reload_agents():
+        return detect_agent_clis()
+
+    def _show_roster(agents: list[dict]) -> None:
+        print()
+        print(f"  {B}Agent Cluster{R}  {DIM}{target.name}{R}  {DIM}center={center}{R}")
+        print()
+        # Group: cloud agents first, then Ollama models
+        cloud   = [a for a in agents if not a["name"].startswith("ollama:") and not a["name"].startswith("__")]
+        ollamas = [a for a in agents if a["name"].startswith("ollama:")]
+        ollama_meta = [a for a in agents if a["name"].startswith("__")]
+
+        for a in cloud:
+            if a.get("available"):
+                icon   = f"{G}✓{R}"
+                badge  = f"{G}ready{R}"
+                marker = f"  {C}← center{R}" if a["name"] == center else ""
+            elif a.get("installed") and not a.get("authed"):
+                icon  = f"{Y}!{R}"
+                badge = f"{Y}installed — needs auth{R}"
+                marker = ""
+            else:
+                icon  = f"{DIM}↓{R}"
+                badge = f"{DIM}not installed{R}"
+                marker = ""
+            label = f"{B}{a['label']}{R}"
+            print(f"  {icon}  {label:<32}{badge}{marker}")
+            detail = a.get("detail", "")
+            if detail:
+                print(f"       {DIM}{detail}{R}")
+            print()
+
+        if ollamas:
+            print(f"  {DIM}── Local (Ollama) ────────────────────────────────────────{R}")
+            print()
+            for a in ollamas:
+                marker = f"  {C}← center{R}" if a["name"] == center else ""
+                print(f"  {G}✓{R}  {B}{a['label']}{R}{marker}")
+                print(f"       {DIM}{a['detail']}{R}")
+                print()
+        elif ollama_meta:
+            for a in ollama_meta:
+                print(f"  {DIM}↓  {a['label']}{R}")
+                print(f"       {DIM}{a['detail']}{R}")
+                print()
+
+    def _configure_agent(agent: dict) -> bool:
+        """Walk through install → auth → verify for one agent. Returns True if now available."""
+        nonlocal center
+        name  = agent["name"]
+        label = agent["label"]
+
+        # ── Ollama model — pull if needed ─────────────────────────────────────
+        if name.startswith("ollama:"):
+            _info(f"{label} is already running — set as center?")
+            if confirm(f"Set {label} as preferred center?", default=False):
+                run_center(target, action="set", value=name)
+                center = name
+            return True
+
+        if name.startswith("__"):
+            # meta-entry (install Ollama / pull model)
+            if "pull" in name:
+                _pick_ollama_model_to_pull()
+            else:
+                _info("Install Ollama from https://ollama.com/download")
+                try:
+                    import subprocess as _sp
+                    _sp.run(["open", "https://ollama.com/download"], check=False)
+                except Exception:
+                    pass
+            return False
+
+        # ── Show install steps ────────────────────────────────────────────────
+        steps = agent.get("install_steps", [])
+        docs  = agent.get("docs_url", "")
+        print()
+        print(f"  {B}{label}{R}")
+        if docs:
+            _info(f"Docs: {DIM}{docs}{R}")
+        print()
+
+        fresh_install = False  # track whether we just installed it now
+
+        # ── Step 1: Install ───────────────────────────────────────────────────
+        if not agent.get("installed"):
+            how = agent.get("install_how")
+            pkg = agent.get("install_pkg", "")
+
+            if steps:
+                _info("Install steps:")
+                for s in steps:
+                    print(f"    {DIM}{s}{R}")
+                print()
+
+            if how == "npm":
+                cmd_str = f"npm install -g {pkg}"
+                if not confirm(f"Run:  {B}{cmd_str}{R}  now?", default=True):
+                    _info(f"Run manually:  {cmd_str}")
+                    return False
+                print()
+                _info(f"Installing  {B}{pkg}{R}  via npm ...")
+                ok = install_agent_cli(agent)
+                if not ok:
+                    _warn("npm install failed — check Node.js version and try manually")
+                    return False
+                _ok(f"{label} installed")
+                fresh_install = True
+                # Reload agent state after install
+                agent = next(
+                    (a for a in detect_agent_clis() if a["name"] == name),
+                    agent,
+                )
+
+            elif how in ("url", None):
+                url = agent.get("docs_url") or agent.get("auth_url") or ""
+                _warn(f"Cannot auto-install {label} — manual download required.")
+                if url:
+                    _info(f"Download from:  {B}{url}{R}")
+                    try:
+                        import subprocess as _sp
+                        _sp.run(["open", url], check=False)
+                        _info("Opened download page in your browser.")
+                    except Exception:
+                        pass
+                raw = prompt_input(f"\n  Press Enter once {label} is installed (esc to skip) › ")
+                if raw is None:
+                    return False
+                # Re-detect
+                agent = next(
+                    (a for a in detect_agent_clis() if a["name"] == name),
+                    agent,
+                )
+                if not agent.get("installed"):
+                    _warn(f"{label} not detected yet — try again after installing")
+                    return False
+                fresh_install = True
+
+        # ── Step 2: Auth (always run after fresh install OR when not authed) ──
+        need_auth = fresh_install or not agent.get("authed")
+        if agent.get("installed") and need_auth:
+            print()
+            note = agent.get("auth_note", "")
+            if note:
+                for line in note.splitlines():
+                    _info(line)
+                print()
+
+            if name == "codex":
+                _codex_auth_flow()
+
+            elif name in ("claude", "antigravity"):
+                # Run auth command interactively — it owns the TTY for browser redirect
+                auth_cmd = agent.get("auth_cmd")
+                if auth_cmd:
+                    _info(f"Running:  {B}{' '.join(auth_cmd)}{R}")
+                    _info(f"{DIM}Your browser will open for login — follow the prompts.{R}")
+                    print()
+                    import subprocess as _sp
+                    try:
+                        _sp.run(auth_cmd, check=False)
+                    except Exception as exc:
+                        _warn(f"auth command failed: {exc}")
+                        return False
+                else:
+                    auth_url = agent.get("auth_url", "")
+                    if auth_url:
+                        _info(f"Open:  {B}{auth_url}{R}")
+                        try:
+                            import subprocess as _sp
+                            _sp.run(["open", auth_url], check=False)
+                        except Exception:
+                            pass
+                    prompt_input("  Press Enter once login is complete (esc to skip) › ")
+
+            # Re-detect after auth
+            agent = next(
+                (a for a in detect_agent_clis() if a["name"] == name),
+                agent,
+            )
+
+        # ── Step 3: Verify ────────────────────────────────────────────────────
+        if agent.get("available"):
+            _ok(f"{label} is ready")
+        elif agent.get("installed"):
+            _warn(f"{label} installed but auth not confirmed — check manually")
+        else:
+            _warn(f"{label} not fully set up")
+            return False
+
+        # ── Step 4: Set as center? ────────────────────────────────────────────
+        print()
+        if name != center and agent.get("available"):
+            if confirm(f"Set {B}{label}{R} as preferred center for {target.name}?", default=False):
+                run_center(target, action="set", value=name)
+                center = name
+                _ok(f"Center set to  {B}{name}{R}")
+
+        return agent.get("available", False)
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+    while True:
+        agents = _reload_agents()
+        _show_roster(agents)
+
+        # Build menu items (cloud first, then Ollama)
+        items: list[MenuItem] = []
+        for a in agents:
+            if a["name"].startswith("__"):
+                # Show install-Ollama / pull-model option
+                items.append(MenuItem(
+                    a["name"],
+                    a["label"],
+                    f"{DIM}↓  set up local inference{R}",
+                ))
+                continue
+
+            if a["name"].startswith("ollama:"):
+                icon = "✓"
+                action = "set as center"
+            elif a.get("available"):
+                icon = "✓"
+                action = "re-auth / set as center"
+            elif a.get("installed"):
+                icon = "!"
+                action = "configure auth"
+            else:
+                icon = "↓"
+                action = "install"
+
+            items.append(MenuItem(a["name"], a["label"], f"{icon}  {action}"))
+
+        items.append(MenuItem("__exit__", "Done", "exit agents panel"))
+
+        print()
+        chosen = menu("Configure agent:", items)
+        if chosen is None or chosen == "__exit__":
+            break
+
+        agent = next((a for a in agents if a["name"] == chosen), None)
+        if agent is None:
+            continue
+
+        print()
+        print(f"{C}── {agent['label']} ──{R}")
+        print()
+        _configure_agent(agent)
+        print()
+
+    # Final summary
+    print()
+    agents = _reload_agents()
+    ready = [a for a in agents if a.get("available") and not a["name"].startswith("__")]
+    _info(f"Cluster summary:  {G}{len(ready)}{R}  agent(s) ready")
+    for a in ready:
+        marker = "  ← center" if a["name"] == center else ""
+        _ok(f"{a['label']}{marker}")
+    print()
+    return 0
+
+
 def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
              from_analysis: str | None = None) -> int:
     from harness_core.project_init import analyze_project, init_project_full, is_initialized
@@ -645,20 +969,20 @@ def run_eject(target: Path, *, dry_run: bool = False) -> int:
 
 
 def run_workflow_cmd(target: Path) -> int:  # noqa: C901
-    """Interactive workflow: grill session → spec HTML → agent execution."""
+    """Center-driven orchestration: RAG → grill → center plans phases → subordinates execute."""
     from harness_core.tui import prompt_input, menu, MenuItem
     from harness_core.workflow_runner import (
         resolve_mode,
+        get_agent_roster,
+        build_rag_context,
         generate_grill_questions,
-        generate_plan,
+        plan_phases,
         generate_spec_html,
         check_should_evaluate,
         save_evaluation,
         save_spec,
-        build_workflow_prompt,
-        _invoke_agent,
+        run_workflow,
     )
-    from harness_core.agent_research import detect_agent_clis
 
     # ── Task input ────────────────────────────────────────────────────────────
     print()
@@ -672,22 +996,46 @@ def run_workflow_cmd(target: Path) -> int:  # noqa: C901
     # ── Load project metadata ─────────────────────────────────────────────────
     project_json = target / ".harness" / "project.json"
     project_name = target.name
-    language = "unknown"
     if project_json.exists():
         try:
             meta = json.loads(project_json.read_text(encoding="utf-8"))
             project_name = meta.get("project_name", project_name)
-            language     = meta.get("language", language)
         except Exception:
             pass
+
+    # ── Agent roster (center + subordinates) ──────────────────────────────────
+    print()
+    _info("Detecting available agents ...")
+    roster = get_agent_roster(target)
+    center      = roster["center"]
+    subordinates = roster["subordinates"]
+    sub_names    = [a["name"] for a in subordinates]
+
+    _row("Center",       center)
+    _row("Subordinates", ", ".join(sub_names) if sub_names else "none (center does all phases)")
+
+    # ── Build RAG context pack ────────────────────────────────────────────────
+    print()
+    _info(f"Building RAG context pack  {DIM}(task-keyed, shared with all agents){R}")
+    try:
+        rag_content, rag_path = build_rag_context(target, task)
+        if rag_path:
+            _ok(f"RAG pack ready  {DIM}{rag_path.name}  (~{len(rag_content)//4} tokens est.){R}")
+        elif rag_content:
+            _ok(f"RAG context from analysis  {DIM}({len(rag_content)//4} tokens est.){R}")
+        else:
+            _warn("no RAG context available — proceeding without")
+    except Exception as exc:
+        _warn(f"RAG build failed: {exc}")
+        rag_content, rag_path = "", None
 
     # ── Mode resolution ───────────────────────────────────────────────────────
     print()
     _info("Detecting task complexity ...")
     mode = resolve_mode(task)
     mode_label = {
-        "grill": f"{G}planning mode{R}  {DIM}(complex — Q&A + spec){R}",
-        "quick": f"{Y}quick mode{R}  {DIM}(lightweight — direct execution){R}",
+        "grill": f"{G}planning mode{R}  {DIM}(complex — Q&A + spec + phase plan){R}",
+        "quick": f"{Y}quick mode{R}  {DIM}(lightweight — direct phase plan){R}",
     }.get(mode, f"{DIM}{mode}{R}")
     _row("Mode", mode_label)
 
@@ -697,8 +1045,8 @@ def run_workflow_cmd(target: Path) -> int:  # noqa: C901
         "Confirm mode or switch:",
         [
             MenuItem("keep",  "Keep detected mode", f"proceed as  {mode}"),
-            MenuItem("grill", "Switch to planning", "run Q&A + generate spec"),
-            MenuItem("quick", "Switch to quick",    "skip planning, execute directly"),
+            MenuItem("grill", "Switch to planning", "run Q&A + generate spec + phase plan"),
+            MenuItem("quick", "Switch to quick",    "skip Q&A, go straight to phase plan"),
         ],
         compact=True,
     )
@@ -708,95 +1056,101 @@ def run_workflow_cmd(target: Path) -> int:  # noqa: C901
     if override != "keep":
         mode = override
 
-    # ── Agent selection ───────────────────────────────────────────────────────
-    agents = [a for a in detect_agent_clis() if a.get("available")]
-    if not agents:
-        _warn("No agent available — spec will be saved but not executed.")
-        agent_choice = None
-    else:
-        agent_items = [MenuItem(a["name"], a["label"], a.get("detail", "")) for a in agents]
-        agent_items.append(MenuItem("skip", "Save spec only", "don't invoke an agent"))
-        print()
-        agent_choice = menu("Which agent should execute the task?", agent_items, compact=True)
-        if agent_choice is None or agent_choice == "skip":
-            agent_choice = None
-
-    # ── Grill session ─────────────────────────────────────────────────────────
+    # ── Grill session (center generates questions) ────────────────────────────
     answers: dict[str, str] = {}
-    plan = ""
     spec_path = None
 
     if mode == "grill":
         print()
-        _info("Generating clarifying questions ...")
-        snippet = ""
-        try:
-            from harness_core.project_analyzer import build_analysis_context, extract_key_files
-            snippet = build_analysis_context(target, extract_key_files(target), max_chars=800)
-        except Exception:
-            pass
-
-        questions = generate_grill_questions(task, project_name, language, snippet)
+        _info(f"Asking {B}{center}{R} to generate clarifying questions ...")
+        questions = generate_grill_questions(center, task, rag_content, target)
 
         print()
         _info(f"Answer each question  {DIM}(enter to confirm, esc to skip){R}")
         for q in questions:
             print()
-            print(f"  {BOLD}{q}{RESET}")
+            print(f"  {B}{q}{R}")
             ans = prompt_input(f"  {DIM}›{R} ")
             if ans:
                 answers[q] = ans
 
-        if answers:
-            print()
-            _info("Generating implementation plan ...")
-            plan = generate_plan(task, answers, language)
-
-            agent_name_for_html = agent_choice or "harness"
-            html = generate_spec_html(task, mode, answers, plan, project_name, agent_name_for_html)
-            spec_path = save_spec(target, task, html)
-            _ok(f"Spec saved  {DIM}{spec_path.relative_to(target)}{R}")
-
-            # Detect reusable pattern
-            try:
-                should_eval, reason = check_should_evaluate(task, answers)
-                if should_eval:
-                    ep = save_evaluation(target, task, reason, answers)
-                    _ok(f"Evaluation saved  {DIM}{ep.relative_to(target)}{R}")
-                    _info(f"  {DIM}Pattern: {reason}{R}")
-            except Exception:
-                pass
-        else:
-            _warn("No answers — proceeding in quick mode.")
+        if not answers:
+            _warn("No answers — switching to quick mode.")
             mode = "quick"
 
-    # ── Build prompt + show ───────────────────────────────────────────────────
-    prompt = build_workflow_prompt(task, mode, answers, plan, spec_path, target)
-
-    # Save prompt as .harness/workflow-task.md for reference / manual paste
-    task_md = target / ".harness" / "workflow-task.md"
-    task_md.write_text(prompt, encoding="utf-8")
+    # ── Center plans phases ───────────────────────────────────────────────────
+    print()
+    _info(f"Asking {B}{center}{R} to plan phases and assign agents ...")
+    phases = plan_phases(
+        center      = center,
+        task        = task,
+        mode        = mode,
+        answers     = answers,
+        rag_content = rag_content,
+        subordinates = subordinates,
+        root        = target,
+    )
 
     print()
-    print(f"{DIM}{'─'*60}{R}")
-    print(prompt)
-    print(f"{DIM}{'─'*60}{R}")
-    _info(f"Prompt also saved to  {DIM}.harness/workflow-task.md{R}")
+    _info(f"Phase plan  {DIM}({len(phases)} phases){R}")
+    for p in phases:
+        _row(p["name"], f"{B}{p['agent']}{R}  {DIM}{p.get('description', '')[:60]}{R}")
 
-    # ── Invoke agent ──────────────────────────────────────────────────────────
-    if agent_choice:
-        print()
-        _info(f"Invoking {B}{agent_choice}{R} ...")
-        print()
-        rc = _invoke_agent(agent_choice, prompt, target)
-        if rc == 2:
-            _warn(f"Agent '{agent_choice}' CLI not found — copy prompt above and paste into your agent.")
-        elif rc != 0:
-            _warn(f"Agent exited with code {rc}")
+    # ── Spec HTML (with phase table) ──────────────────────────────────────────
+    if mode == "grill" or answers:
+        html = generate_spec_html(
+            task        = task,
+            mode        = mode,
+            answers     = answers,
+            phases      = phases,
+            project_name = project_name,
+            center      = center,
+            subordinates = subordinates,
+        )
+        spec_path = save_spec(target, task, html)
+        _ok(f"Spec saved  {DIM}{spec_path.relative_to(target)}{R}")
+
+        # Detect reusable pattern
+        try:
+            should_eval, reason = check_should_evaluate(task, answers)
+            if should_eval:
+                ep = save_evaluation(target, task, reason, answers)
+                _ok(f"Evaluation saved  {DIM}{ep.relative_to(target)}{R}")
+                _info(f"  {DIM}Pattern: {reason}{R}")
+        except Exception:
+            pass
+
+    # ── Confirm execution ─────────────────────────────────────────────────────
+    print()
+    from harness_core.tui import confirm
+    if not confirm(f"Execute {len(phases)} phases now?", default=True):
+        _info("Spec saved — invoke manually when ready.")
+        if spec_path:
+            _info(f"Spec: {DIM}{spec_path}{R}")
+        return 0
+
+    # ── Execute phases ────────────────────────────────────────────────────────
+    print()
+    _info(f"Starting phase execution  {DIM}({len(phases)} phases){R}")
+    rc = run_workflow(
+        target_root = target,
+        task        = task,
+        mode        = mode,
+        answers     = answers,
+        phases      = phases,
+        rag_content = rag_content,
+        rag_path    = rag_path,
+        spec_path   = spec_path,
+        center      = center,
+    )
+
+    print()
+    if rc == 0:
+        _ok(f"Workflow complete  {DIM}phase outputs in .harness/workflow-phases/{R}")
     else:
-        _info(f"Copy the prompt above and give it to your agent ({DIM}CLAUDE.md / GEMINI.md agent{R}).")
+        _warn(f"Workflow finished with exit code {rc}")
 
-    return 0
+    return rc
 
 
 def run_analyze(target: Path) -> int:
@@ -1041,6 +1395,175 @@ def run_rag_pack(target: Path, *, query: str, center: str = "project", local_mod
     return 0 if report["verdict"] == "PASS" else 1
 
 
+def run_research_refresh(target: Path, *, force: bool = False) -> int:
+    from harness_core.research_refresh import refresh_default_research
+
+    report = refresh_default_research(target, force=force)
+    print()
+    _ok(f"Research registry  {DIM}{report['registry_path']}{R}")
+    _row("Checked", str(report["refresh"]["checked_count"]))
+    _row("Changed", str(report["refresh"]["changed_count"]))
+    _row("Due remaining", str(report["report"]["due_count"]))
+    _row("Next", report["next_action"])
+    if report["refresh"].get("errors"):
+        _warn(f"errors: {len(report['refresh']['errors'])}")
+    print()
+    return 0 if not report["refresh"].get("errors") else 1
+
+
+def run_local_plan(
+    target: Path,
+    *,
+    task: str,
+    complexity: str,
+    schema_json: str | None,
+    embedding_model: str | None,
+) -> int:
+    from harness_core.semantic_index import detect_ollama, plan_semantic_index
+    from harness_core.structured_worker import plan_structured_local_worker
+
+    embed_models, other_models = detect_ollama()
+    installed = embed_models + other_models
+    machine = _machine_state()
+    schema = json.loads(schema_json) if schema_json else {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["summary", "evidence"],
+    }
+    semantic = plan_semantic_index(machine=machine, installed_models=installed, model=embedding_model)
+    local_model = _read_local_model(target)
+    structured = plan_structured_local_worker(
+        task,
+        machine=machine,
+        task_complexity=complexity,
+        schema=schema,
+        model=local_model,
+    )
+    print()
+    _row("Machine", f"swap={machine['swap_used_mb']}/{machine['swap_total_mb']}MB free={machine['memory_free_percent']}%")
+    _row("Embedding", f"{semantic['model']}  {DIM}{semantic['mode']}{R}")
+    if semantic.get("pull_command"):
+        _row("Pull", semantic["pull_command"])
+    _row("Local worker", f"{structured['model'] if structured.get('use_ollama') else 'extractive'}  {DIM}{structured['mode']}{R}")
+    if structured.get("command"):
+        _row("Command", structured["command"])
+    _row("RAG fallback", f"harness rag-pack {json.dumps(task, ensure_ascii=False)}")
+    print()
+    return 0
+
+
+def run_usage_cmd(target: Path, *, action: str, raw_file: str | None = None, center: str | None = None, label: str | None = None) -> int:
+    from harness_core.token_ledger import summarize_usage
+    from harness_core.usage_ingestion import ingest_usage
+
+    ledger = target / "production_artifacts" / "usage.jsonl"
+    if action == "report":
+        print(json.dumps(summarize_usage(ledger), indent=2, ensure_ascii=False))
+        return 0
+    if action in {"ingest-claude", "ingest-codex"}:
+        if not raw_file:
+            _warn("raw output file is required")
+            return 2
+        resolved_center = center or ("claude" if action == "ingest-claude" else "codex")
+        raw_output = Path(raw_file).expanduser().read_text(encoding="utf-8")
+        result = ingest_usage(ledger, center=resolved_center, raw_output=raw_output, label=label)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    _warn(f"unknown usage action: {action}")
+    return 2
+
+
+def run_readiness(target: Path) -> int:
+    from harness_core.readiness import build_readiness_report
+    from harness_core.router import load_state
+
+    probes = _agent_probes()
+    report = build_readiness_report(
+        load_state(target / ".harness" / "state.json"),
+        probes=probes,
+        local_probe=_local_probe(),
+        machine=_machine_state(),
+    )
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _read_local_model(target: Path) -> str:
+    state_path = target / ".harness" / "state.json"
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            model = state.get("local_model", {}).get("model")
+            if model:
+                return str(model)
+        except Exception:
+            pass
+    return "qwen3.5:9b"
+
+
+def _command_output(command: list[str], *, timeout: int = 20) -> str:
+    import subprocess
+
+    env = os.environ.copy()
+    env["PATH"] = f"{Path.home() / '.local/bin'}:{env.get('PATH', '')}"
+    try:
+        result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return f"{result.stdout}\n{result.stderr}"
+
+
+def _machine_state() -> dict[str, int]:
+    import re
+
+    swap = _command_output(["sysctl", "vm.swapusage"])
+    match = re.search(r"total = ([0-9.]+)M\s+used = ([0-9.]+)M", swap)
+    pressure = _command_output(["memory_pressure"])
+    free_match = re.search(r"System-wide memory free percentage: (\d+)%", pressure)
+    return {
+        "swap_total_mb": int(float(match.group(1))) if match else 1,
+        "swap_used_mb": int(float(match.group(2))) if match else 0,
+        "memory_free_percent": int(free_match.group(1)) if free_match else 0,
+    }
+
+
+def _agent_probes() -> dict[str, dict]:
+    codex = _command_output(["codex", "mcp", "list"])
+    claude_path = Path.home() / ".local/bin" / "claude"
+    agy_path = Path.home() / ".local/bin" / "agy"
+    claude = _command_output([str(claude_path), "mcp", "list"]) if claude_path.exists() else ""
+    agy_plugins = _command_output([str(agy_path), "plugins", "list"]) if agy_path.exists() else ""
+    agy_version = _command_output([str(agy_path), "--version"]) if agy_path.exists() else ""
+    return {
+        "codex": {
+            "installed": shutil.which("codex") is not None,
+            "harness_connected": "harness" in codex and "enabled" in codex,
+        },
+        "claude": {
+            "installed": claude_path.exists() or shutil.which("claude") is not None,
+            "harness_connected": "harness:" in claude and "Connected" in claude,
+        },
+        "antigravity": {
+            "installed": agy_path.exists() or shutil.which("agy") is not None,
+            "harness_connected": "tri-center-harness" in agy_plugins or "harness" in agy_plugins,
+            "version": agy_version.strip(),
+            "mcp_native_supported": False,
+            "rag_pack_fallback": True,
+        },
+    }
+
+
+def _local_probe() -> dict[str, object]:
+    ollama_ps = _command_output(["ollama", "ps"])
+    return {
+        "installed": shutil.which("ollama") is not None,
+        "model_loaded": len([line for line in ollama_ps.splitlines() if line.strip()]) > 1,
+    }
+
+
 def run_status(target: Path) -> int:
     state_path   = target / ".harness" / "state.json"
     project_json = target / ".harness" / "project.json"
@@ -1191,7 +1714,7 @@ def run_status(target: Path) -> int:
 
 
 def run_mcp(target: Path, action: str) -> int:
-    """harness mcp status|register|unregister"""
+    """harness mcp status|register|unregister|security"""
     from harness_core.mcp_registration import (
         mcp_registration_status, register_mcp_project, register_mcp_global, unregister_mcp,
     )
@@ -1287,6 +1810,15 @@ def run_mcp(target: Path, action: str) -> int:
             _info("harness was not registered in any config files")
         return 0
 
+    if action == "security":
+        from harness_core.mcp_security import audit_mcp_security
+        from harness_mcp.server import TOOLS
+
+        server_text = (harness_root / "harness_mcp" / "server.py").read_text(encoding="utf-8")
+        report = audit_mcp_security(server_text=server_text, tools=TOOLS)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0 if report["verdict"] == "PASS" else 1
+
     print(f"unknown mcp action: {action}", file=sys.stderr)
     return 1
 
@@ -1297,11 +1829,12 @@ def run_mcp(target: Path, action: str) -> int:
 
 # Embedding models — first one is the recommended default
 _EMBED_CATALOGUE = [
-    ("nomic-embed-text",     "137 MB", "best balance — fast, accurate, widely used"),
+    ("qwen3-embedding",      "varies", "recommended multilingual/code RAG default"),
+    ("embeddinggemma",       "varies", "recommended compact semantic retrieval"),
+    ("all-minilm",           "46 MB",  "ultra-fast, low RAM — good for large repos"),
+    ("nomic-embed-text",     "137 MB", "stable fallback — fast, accurate, widely used"),
     ("mxbai-embed-large",    "670 MB", "high accuracy, larger memory footprint"),
     ("bge-m3",               "1.2 GB", "multilingual — EN/VI/ZH/JP supported"),
-    ("all-minilm",           "46 MB",  "ultra-fast, low RAM — good for large repos"),
-    ("snowflake-arctic-embed","335 MB","optimised for code search"),
 ]
 
 # LLM sub-agent models for context retrieval
@@ -1582,12 +2115,18 @@ _VERSION = "1.0"
 # Shown in the interactive ↑↓ TUI menu  (label = command name, desc = one-line summary)
 _MENU_ITEMS = [
     ("workflow",     "workflow",     "Agent-driven task: grill session → spec → agent executes"),
+    ("agents",       "agents",       "Install, auth, and configure Claude Code / Codex / Antigravity / Ollama"),
     ("init",         "init",         "Full project init: detect stack → agent research → write HARNESS.html"),
     ("update",       "update",       "Pull latest from GitHub; optionally regenerate docs/MCP for this project"),
     ("run",          "run",          "Build RAG pack + launch agent with context pre-loaded"),
     ("rag-pack",     "rag-pack",     "Build task-keyed RAG context pack  [--ticket ID]"),
+    ("local plan",   "local plan",   "Plan Ollama embedding + structured local worker usage"),
+    ("readiness",    "readiness",    "Show live Codex / Claude / Antigravity / Ollama readiness"),
+    ("research-refresh","research-refresh","Refresh official source registry evidence"),
+    ("usage report", "usage report", "Summarize measured center token usage"),
     ("mcp register", "mcp register", "Register harness server in .mcp.json + ~/.gemini/* configs"),
     ("mcp status",   "mcp status",   "Show MCP registration state across all agent configs"),
+    ("mcp security", "mcp security", "Audit MCP tool safety and command policy"),
     ("center",       "center",       "Set preferred routing center: auto / codex / claude / antigravity"),
     ("status",       "status",       "Show routing center, memory, features, MCP health"),
     ("index",        "index",        "Build / rebuild BM25 + semantic RAG index"),
@@ -1598,10 +2137,17 @@ _MENU_ITEMS = [
 
 # Flat command reference printed before the TUI when harness is run with no args
 _ALL_COMMANDS: list[tuple[str, str]] = [
+    ("harness agents",             "Install, auth, and configure Claude Code / Codex / Antigravity / Ollama"),
     ("harness init",               "Full project init: detect stack → agent research → write HARNESS.html"),
     ("harness update",             "Pull latest harness; optionally regenerate docs/MCP for this project"),
     ("harness run \"<task>\"",     "Build RAG pack + launch agent with context pre-loaded"),
     ("harness rag-pack \"<task>\"","Build task-keyed RAG context pack  [--ticket ID]"),
+    ("harness local plan \"<task>\"","Plan local Ollama worker + embedding fallback"),
+    ("harness readiness",          "Show live Codex / Claude / Antigravity / Ollama readiness"),
+    ("harness research-refresh",   "Refresh official source registry evidence"),
+    ("harness usage report",       "Summarize measured center token usage"),
+    ("harness usage ingest-claude <file>","Record Claude JSON usage into ledger"),
+    ("harness usage ingest-codex <file>","Record Codex JSONL usage into ledger"),
     ("harness status",             "Show routing center, memory, features, MCP health"),
     ("harness analyze",            "Print project profile JSON (language, framework, entry points)"),
     ("harness grill",              "Q&A session — fills [CUSTOMIZE] section in HARNESS.md"),
@@ -1610,6 +2156,7 @@ _ALL_COMMANDS: list[tuple[str, str]] = [
     ("harness center set <center>","Set center: auto / codex / claude / antigravity"),
     ("harness mcp status",         "Show MCP registration state across all agent configs"),
     ("harness mcp register",       "Register harness server in .mcp.json + ~/.gemini/* configs"),
+    ("harness mcp security",       "Audit MCP command-policy and tool safety"),
     ("harness mcp unregister",     "Remove harness from all agent config files"),
     ("harness eject",              "Remove .harness/, HARNESS.md, HARNESS.html from project"),
 ]
@@ -1684,6 +2231,8 @@ def launch_menu(target: Path) -> None:
         try:
             if chosen == "workflow":
                 run_workflow_cmd(target)
+            elif chosen == "agents":
+                run_agents_cmd(target)
             elif chosen == "init":
                 run_init(target)
             elif chosen == "update":
@@ -1696,10 +2245,22 @@ def launch_menu(target: Path) -> None:
                 query = prompt_input(f"  {DIM}Task/query (esc=cancel):{R} ")
                 if query:
                     run_rag_pack(target, query=query)
+            elif chosen == "local plan":
+                task = prompt_input(f"  {DIM}Task (esc=cancel):{R} ")
+                if task:
+                    run_local_plan(target, task=task, complexity="complex", schema_json=None, embedding_model=None)
+            elif chosen == "readiness":
+                run_readiness(target)
+            elif chosen == "research-refresh":
+                run_research_refresh(target)
+            elif chosen == "usage report":
+                run_usage_cmd(target, action="report")
             elif chosen == "mcp register":
                 run_mcp(target, "register")
             elif chosen == "mcp status":
                 run_mcp(target, "status")
+            elif chosen == "mcp security":
+                run_mcp(target, "security")
             elif chosen == "center":
                 _pick_center(target)
             elif chosen == "status":
@@ -1760,7 +2321,34 @@ def main() -> int:
     p_rag.add_argument("--center", choices=["project", "auto", "codex", "claude", "antigravity"], default="project")
     p_rag.add_argument("--local-model", default=None)
 
+    p_local = sub.add_parser("local", help="Plan local Ollama embedding and structured-worker usage")
+    local_sub = p_local.add_subparsers(dest="local_action", metavar="<plan>", required=True)
+    p_local_plan = local_sub.add_parser("plan", help="Plan local RAG/structured worker for a task")
+    p_local_plan.add_argument("task")
+    p_local_plan.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_local_plan.add_argument("--complexity", choices=["light", "complex", "heavy", "rag-large"], default="complex")
+    p_local_plan.add_argument("--schema-json", default=None)
+    p_local_plan.add_argument("--embedding-model", default=None, help="auto, qwen3-embedding, embeddinggemma, all-minilm, or another installed embedding model")
+
+    p_research_refresh = sub.add_parser("research-refresh", help="Refresh the default official research registry")
+    p_research_refresh.add_argument("--force", action="store_true")
+    sub.add_parser("readiness", help="Show live Codex/Claude/Antigravity/Ollama readiness")
+
+    p_usage = sub.add_parser("usage", help="Report or ingest measured Codex/Claude token usage")
+    usage_sub = p_usage.add_subparsers(dest="usage_action", metavar="<report|ingest-claude|ingest-codex>", required=True)
+    p_usage_report = usage_sub.add_parser("report", help="Summarize production_artifacts/usage.jsonl")
+    p_usage_report.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_usage_claude = usage_sub.add_parser("ingest-claude", help="Parse Claude JSON output into usage ledger")
+    p_usage_claude.add_argument("raw_file")
+    p_usage_claude.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_usage_claude.add_argument("--label", default=None)
+    p_usage_codex = usage_sub.add_parser("ingest-codex", help="Parse Codex JSONL output into usage ledger")
+    p_usage_codex.add_argument("raw_file")
+    p_usage_codex.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_usage_codex.add_argument("--label", default=None)
+
     sub.add_parser("workflow", help="Agent-driven task: grill session → spec HTML → agent executes")
+    sub.add_parser("agents",   help="Install, auth, and configure Claude Code / Codex / Antigravity / Ollama")
     sub.add_parser("analyze",  help="Print project profile JSON")
     sub.add_parser("grill",    help="Fill [CUSTOMIZE] section interactively")
     sub.add_parser("status",   help="Show harness state")
@@ -1775,13 +2363,18 @@ def main() -> int:
     sub.add_parser("update",  help="Pull latest harness from GitHub; optionally refresh project files")
 
     p_mcp = sub.add_parser("mcp", help="Manage MCP server registration across all agent configs")
-    mcp_sub = p_mcp.add_subparsers(dest="mcp_action", metavar="<status|register|unregister>", required=True)
-    mcp_sub.add_parser("status",     help="Show registration state in each agent's config file")
-    mcp_sub.add_parser("register",   help="Register harness MCP server in all installed agent configs")
-    mcp_sub.add_parser("unregister", help="Remove harness from all agent config files")
+    mcp_sub = p_mcp.add_subparsers(dest="mcp_action", metavar="<status|register|unregister|security>", required=True)
+    p_mcp_status = mcp_sub.add_parser("status", help="Show registration state in each agent's config file")
+    p_mcp_status.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_mcp_register = mcp_sub.add_parser("register", help="Register harness MCP server in all installed agent configs")
+    p_mcp_register.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_mcp_unregister = mcp_sub.add_parser("unregister", help="Remove harness from all agent config files")
+    p_mcp_unregister.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_mcp_security = mcp_sub.add_parser("security", help="Audit MCP tool safety and command-policy coverage")
+    p_mcp_security.add_argument("path", nargs="?", default=None, metavar="PATH")
 
     for name, p in sub.choices.items():
-        if name not in {"center", "rag-pack", "run", "mcp", "update"}:
+        if name not in {"center", "rag-pack", "run", "mcp", "update", "local", "usage"}:
             p.add_argument("path", nargs="?", default=None, metavar="PATH")
 
     args = parser.parse_args()
@@ -1795,6 +2388,8 @@ def main() -> int:
     # ── direct subcommand (for scripting / CI) ────────────────────────────────
     if args.command == "workflow":
         return run_workflow_cmd(target)
+    if args.command == "agents":
+        return run_agents_cmd(target)
     if args.command == "init":
         return run_init(target, dry_run=args.dry_run, skip_index=args.skip_index,
                         from_analysis=getattr(args, "from_analysis", None))
@@ -1804,6 +2399,26 @@ def main() -> int:
         return run_center(target, action=args.center_action, value=getattr(args, "center_value", None))
     if args.command == "rag-pack":
         return run_rag_pack(target, query=args.query, center=args.center, local_model=args.local_model)
+    if args.command == "local":
+        return run_local_plan(
+            target,
+            task=args.task,
+            complexity=args.complexity,
+            schema_json=args.schema_json,
+            embedding_model=args.embedding_model,
+        )
+    if args.command == "research-refresh":
+        return run_research_refresh(target, force=getattr(args, "force", False))
+    if args.command == "readiness":
+        return run_readiness(target)
+    if args.command == "usage":
+        return run_usage_cmd(
+            target,
+            action=args.usage_action,
+            raw_file=getattr(args, "raw_file", None),
+            center="claude" if args.usage_action == "ingest-claude" else "codex" if args.usage_action == "ingest-codex" else None,
+            label=getattr(args, "label", None),
+        )
     if args.command == "analyze":
         return run_analyze(target)
     if args.command == "grill":

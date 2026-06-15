@@ -48,6 +48,7 @@ from harness_core.research_registry import (
     record_source_check,
     refresh_research_sources,
 )
+from harness_core.research_refresh import refresh_default_research
 from harness_core.retrieval_eval import evaluate_hybrid_dataset
 from harness_core.router import choose_center, default_state, load_state, save_state, suggest_model_tier
 from harness_core.trajectory import begin_trajectory, record_step, end_trajectory, list_trajectories, classify_failure
@@ -61,10 +62,11 @@ from harness_core.hack_detector import check_trajectory, scan_trajectories
 from harness_core.search_index import build_index, build_indexed_context_pack, search_index
 from harness_core.semantic_index import plan_semantic_index
 from harness_core.self_growth import run_growth_cycle
-from harness_core.structured_worker import plan_structured_local_worker
+from harness_core.structured_worker import plan_structured_local_worker, validate_structured_worker_output
 from harness_core.structured_handoff import validate_structured_handoff, write_structured_handoff
 from harness_core.token_experiment import ingest_claude_result, ingest_codex_jsonl, record_experiment_run, summarize_experiments
 from harness_core.token_ledger import record_usage, summarize_usage
+from harness_core.usage_ingestion import ingest_usage
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -685,6 +687,18 @@ TOOLS = [
         },
     },
     {
+        "name": "harness_validate_structured_local_output",
+        "description": "Validate a local Ollama worker JSON response against the planned JSON schema before cloud handoff.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "raw_output": {"type": "string"},
+                "schema": {"type": "object"},
+            },
+            "required": ["raw_output", "schema"],
+        },
+    },
+    {
         "name": "harness_scaffold_capability",
         "description": "Create a draft capability with a skill and tool specification for future harness growth.",
         "inputSchema": {
@@ -880,6 +894,20 @@ TOOLS = [
         },
     },
     {
+        "name": "harness_ingest_usage",
+        "description": "Parse Claude JSON or Codex JSONL usage and append measured tokens to the shared usage ledger.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "center": {"type": "string", "enum": ["claude", "codex"]},
+                "raw_output": {"type": "string"},
+                "label": {"type": "string"},
+            },
+            "required": ["path", "center", "raw_output"],
+        },
+    },
+    {
         "name": "harness_init_research_registry",
         "description": "Initialize a durable official/community research source registry with refresh cadences.",
         "inputSchema": {
@@ -921,6 +949,18 @@ TOOLS = [
         },
     },
     {
+        "name": "harness_research_refresh",
+        "description": "Ensure the default Codex/Claude/Ollama/MCP/Antigravity research registry exists, refresh due sources, and write last-refresh evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "string"},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["root"],
+        },
+    },
+    {
         "name": "harness_plan_semantic_index",
         "description": "Plan a gated local Ollama embedding index or fall back to hybrid lexical retrieval.",
         "inputSchema": {
@@ -928,7 +968,7 @@ TOOLS = [
             "properties": {
                 "machine": {"type": "object"},
                 "installed_models": {"type": "array", "items": {"type": "string"}},
-                "model": {"type": "string", "default": "embeddinggemma"},
+                "model": {"type": "string", "default": "auto"},
             },
             "required": ["machine", "installed_models"],
         },
@@ -1569,6 +1609,8 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 model=arguments.get("model", "qwen35-codex-local"),
             )
         )
+    if name == "harness_validate_structured_local_output":
+        return _text(validate_structured_worker_output(arguments["raw_output"], arguments["schema"]))
     if name == "harness_scaffold_capability":
         return _text(
             scaffold_capability(Path(arguments["root"]).expanduser(), arguments["name"], arguments["description"])
@@ -1655,6 +1697,15 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 quality_score=arguments.get("quality_score"),
             )
         )
+    if name == "harness_ingest_usage":
+        return _text(
+            ingest_usage(
+                Path(arguments["path"]).expanduser(),
+                center=arguments["center"],
+                raw_output=arguments["raw_output"],
+                label=arguments.get("label"),
+            )
+        )
     if name == "harness_init_research_registry":
         return _text(init_research_registry(Path(arguments["path"]).expanduser(), arguments["sources"]))
     if name == "harness_due_research_sources":
@@ -1675,12 +1726,19 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 force=bool(arguments.get("force", False)),
             )
         )
+    if name == "harness_research_refresh":
+        return _text(
+            refresh_default_research(
+                Path(arguments["root"]).expanduser(),
+                force=bool(arguments.get("force", False)),
+            )
+        )
     if name == "harness_plan_semantic_index":
         return _text(
             plan_semantic_index(
                 machine=arguments["machine"],
                 installed_models=arguments["installed_models"],
-                model=arguments.get("model", "embeddinggemma"),
+                model=arguments.get("model"),
             )
         )
     if name == "harness_evaluate_hybrid_retrieval":

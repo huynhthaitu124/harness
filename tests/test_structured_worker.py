@@ -1,6 +1,6 @@
 import unittest
 
-from harness_core.structured_worker import plan_structured_local_worker
+from harness_core.structured_worker import plan_structured_local_worker, validate_structured_worker_output
 
 
 class StructuredWorkerTests(unittest.TestCase):
@@ -33,6 +33,20 @@ class StructuredWorkerTests(unittest.TestCase):
         self.assertFalse(plan["use_ollama"])
         self.assertEqual("extractive", plan["mode"])
         self.assertNotIn("command", plan)
+
+    def test_validates_structured_worker_output(self):
+        schema = {
+            "type": "object",
+            "properties": {"summary": {"type": "string"}, "count": {"type": "integer"}},
+            "required": ["summary", "count"],
+        }
+
+        valid = validate_structured_worker_output('{"summary":"ok","count":2}', schema)
+        invalid = validate_structured_worker_output('{"summary":"ok"}', schema)
+
+        self.assertTrue(valid["valid"])
+        self.assertFalse(invalid["valid"])
+        self.assertIn("$.count:missing_required", invalid["errors"])
 
 
 if __name__ == "__main__":

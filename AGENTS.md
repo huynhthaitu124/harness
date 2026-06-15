@@ -36,8 +36,12 @@ For long-running work, initialize or use `feature_list.json`. Features are defau
 - `scripts/harness-eject`: low-level eject entry point (used internally by `harness eject`).
 - `scripts/harness-route`: select the center and workflow.
 - `scripts/harness-readiness`: verify live CLI, quota, failure, and local-worker state before delegation.
+- `harness readiness`: unified live readiness report for Codex, Claude, Antigravity, and local Ollama.
 - `scripts/harness-hybrid-context`: build the default compact code context pack.
 - `harness rag-pack "<task>"`: write `.harness/context_packs/last-rag-pack.md` with one shared RAG payload plus Codex, Claude Sonnet, Antigravity, and local Ollama commands.
+- `harness local plan "<task>"`: plan embedding model, structured local worker, and fallback RAG path before using Ollama for complex work.
+- `harness research-refresh`: refresh the default official Codex, Claude, Ollama, MCP, and Antigravity source registry.
+- `harness usage ingest-claude|ingest-codex <raw-output-file>`: record measured cloud token usage into the shared ledger.
 - `scripts/harness-compact-output`: shrink noisy logs/tool output before cloud handoff.
 - `scripts/harness-experiment`: record paired baseline/harness token evidence.
 - `scripts/harness-handoff`: validate structured handoff manifests when changing centers.
@@ -49,6 +53,7 @@ For long-running work, initialize or use `feature_list.json`. Features are defau
 - `scripts/harness-command-policy`: enforce ALLOW/REVIEW/DENY before autonomous shell execution.
 - `scripts/harness-mcp-check`: run protocol-level MCP conformance after server changes.
 - `scripts/harness-mcp-security`: audit MCP process-execution posture and command-policy coverage.
+- `harness mcp security`: run the unified MCP security audit from the project CLI.
 - `scripts/harness-context-pack-audit`: audit context packs for token budget and provenance before cloud handoff.
 - `scripts/harness-codex-preflight`: build the compact Memory/RAG/local-Qwen payload before Codex reads repo-heavy context.
 - `scripts/harness-health`: aggregate tests, doctor, MCP, retrieval, research, readiness, and campaign evidence.

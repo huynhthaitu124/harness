@@ -40,5 +40,54 @@
       "cài",
       "setup"
     ]
+  },
+  "model_tiers": {
+    "opus_keywords": [
+      "architect",
+      "security",
+      "review",
+      "design",
+      "audit",
+      "refactor large",
+      "thiết kế",
+      "bảo mật",
+      "kiến trúc",
+      "phân tích hệ thống"
+    ],
+    "sonnet_keywords": [
+      "debug",
+      "test",
+      "refactor",
+      "explain",
+      "fix",
+      "implement",
+      "write",
+      "sửa",
+      "viết",
+      "lập trình",
+      "tạo",
+      "build"
+    ],
+    "haiku_keywords": [
+      "status",
+      "format",
+      "rename",
+      "list",
+      "summary",
+      "check",
+      "ping",
+      "xem",
+      "liệt kê",
+      "tóm tắt",
+      "kiểm tra nhanh"
+    ]
+  },
+  "local_model": {
+    "enabled": true,
+    "provider": "ollama",
+    "model": "qwen3.5:9b",
+    "endpoint": "http://localhost:11434/api/chat",
+    "think": false,
+    "role": "rag_distiller"
   }
 }

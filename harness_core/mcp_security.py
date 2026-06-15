@@ -30,10 +30,25 @@ def audit_mcp_security(*, server_text: str, tools: list[dict[str, Any]]) -> dict
         if "timeout_sec" not in properties:
             warnings.append(f"delegate_timeout_missing:{name}")
 
+    for name, tool in sorted(tool_by_name.items()):
+        description = str(tool.get("description", "")).strip()
+        if len(description) < 24:
+            warnings.append(f"short_tool_description:{name}")
+        schema = tool.get("inputSchema", {})
+        schema_text = str(schema)
+        if any(token in schema_text.lower() for token in ("password", "secret", "api_key", "token")):
+            warnings.append(f"sensitive_schema_field:{name}")
+
     return {
         "verdict": "PASS" if not failures else "NEEDS_WORK",
         "failures": failures,
         "warnings": warnings,
         "tool_count": len(tool_by_name),
         "delegate_tool_count": len(delegate_tools),
+        "security_contract": {
+            "spec_version": "2025-11-25",
+            "requires_user_consent_for_tools": True,
+            "requires_data_minimization": True,
+            "command_policy_tool": "harness_validate_command" in tool_by_name,
+        },
     }
