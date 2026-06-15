@@ -454,22 +454,62 @@ def run_agents_cmd(target: Path) -> int:  # noqa: C901
                 print(f"       {DIM}{a['detail']}{R}")
                 print()
 
+    def _run_auth(agent: dict) -> bool:
+        """Run the interactive auth/login command for an agent. Returns True if completed."""
+        import subprocess as _sp
+        name     = agent["name"]
+        auth_cmd = agent.get("auth_cmd")
+
+        note = agent.get("auth_note", "")
+        if note:
+            print()
+            for line in note.splitlines():
+                _info(line)
+        print()
+
+        if name == "codex":
+            return _codex_auth_flow()
+
+        if auth_cmd:
+            _info(f"Running:  {B}{' '.join(auth_cmd)}{R}")
+            _info(f"{DIM}Browser will open — sign in and return here when done.{R}")
+            print()
+            try:
+                _sp.run(auth_cmd, check=False)
+                return True
+            except FileNotFoundError:
+                _warn(f"Command not found: {auth_cmd[0]}")
+                return False
+            except Exception as exc:
+                _warn(f"auth failed: {exc}")
+                return False
+
+        # Fallback — no auth_cmd, open browser and wait
+        auth_url = agent.get("auth_url", "")
+        if auth_url:
+            _info(f"Open in browser:  {B}{auth_url}{R}")
+            try:
+                _sp.run(["open", auth_url], check=False)
+            except Exception:
+                pass
+        raw = prompt_input("  Press Enter once login is complete (esc to skip) › ")
+        return raw is not None
+
     def _configure_agent(agent: dict) -> bool:
         """Walk through install → auth → verify for one agent. Returns True if now available."""
         nonlocal center
         name  = agent["name"]
         label = agent["label"]
 
-        # ── Ollama model — pull if needed ─────────────────────────────────────
+        # ── Ollama model ──────────────────────────────────────────────────────
         if name.startswith("ollama:"):
-            _info(f"{label} is already running — set as center?")
-            if confirm(f"Set {label} as preferred center?", default=False):
+            if confirm(f"Set {B}{label}{R} as preferred center?", default=False):
                 run_center(target, action="set", value=name)
                 center = name
+                _ok(f"Center → {name}")
             return True
 
         if name.startswith("__"):
-            # meta-entry (install Ollama / pull model)
             if "pull" in name:
                 _pick_ollama_model_to_pull()
             else:
@@ -481,21 +521,37 @@ def run_agents_cmd(target: Path) -> int:  # noqa: C901
                     pass
             return False
 
-        # ── Show install steps ────────────────────────────────────────────────
-        steps = agent.get("install_steps", [])
-        docs  = agent.get("docs_url", "")
+        # ── Header ────────────────────────────────────────────────────────────
+        docs = agent.get("docs_url", "")
         print()
         print(f"  {B}{label}{R}")
         if docs:
             _info(f"Docs: {DIM}{docs}{R}")
         print()
 
-        fresh_install = False  # track whether we just installed it now
+        # ── Already fully set up — ask what to do ────────────────────────────
+        if agent.get("available"):
+            items = [
+                MenuItem("reauth",  "Login again",          "run the OAuth browser flow"),
+                MenuItem("center",  "Set as center",        f"make {label} the default for this project"),
+                MenuItem("skip",    "Nothing",              "go back"),
+            ]
+            choice = menu(f"{label} is already set up:", items, compact=True)
+            if choice == "reauth":
+                _run_auth(agent)
+                agent = next((a for a in detect_agent_clis() if a["name"] == name), agent)
+            elif choice == "center":
+                run_center(target, action="set", value=name)
+                center = name
+                _ok(f"Center → {name}")
+            return agent.get("available", True)
 
         # ── Step 1: Install ───────────────────────────────────────────────────
+        fresh_install = False
         if not agent.get("installed"):
-            how = agent.get("install_how")
-            pkg = agent.get("install_pkg", "")
+            how  = agent.get("install_how")
+            pkg  = agent.get("install_pkg", "")
+            steps = agent.get("install_steps", [])
 
             if steps:
                 _info("Install steps:")
@@ -509,22 +565,18 @@ def run_agents_cmd(target: Path) -> int:  # noqa: C901
                     _info(f"Run manually:  {cmd_str}")
                     return False
                 print()
-                _info(f"Installing  {B}{pkg}{R}  via npm ...")
+                _info(f"Installing  {B}{pkg}{R}  ...")
                 ok = install_agent_cli(agent)
                 if not ok:
                     _warn("npm install failed — check Node.js version and try manually")
                     return False
                 _ok(f"{label} installed")
                 fresh_install = True
-                # Reload agent state after install
-                agent = next(
-                    (a for a in detect_agent_clis() if a["name"] == name),
-                    agent,
-                )
+                agent = next((a for a in detect_agent_clis() if a["name"] == name), agent)
 
             elif how in ("url", None):
+                # Open download page, then loop until binary is detected
                 url = agent.get("docs_url") or agent.get("auth_url") or ""
-                _warn(f"Cannot auto-install {label} — manual download required.")
                 if url:
                     _info(f"Download from:  {B}{url}{R}")
                     try:
@@ -533,69 +585,34 @@ def run_agents_cmd(target: Path) -> int:  # noqa: C901
                         _info("Opened download page in your browser.")
                     except Exception:
                         pass
-                raw = prompt_input(f"\n  Press Enter once {label} is installed (esc to skip) › ")
-                if raw is None:
-                    return False
-                # Re-detect
-                agent = next(
-                    (a for a in detect_agent_clis() if a["name"] == name),
-                    agent,
-                )
-                if not agent.get("installed"):
-                    _warn(f"{label} not detected yet — try again after installing")
-                    return False
-                fresh_install = True
-
-        # ── Step 2: Auth (always run after fresh install OR when not authed) ──
-        need_auth = fresh_install or not agent.get("authed")
-        if agent.get("installed") and need_auth:
-            print()
-            note = agent.get("auth_note", "")
-            if note:
-                for line in note.splitlines():
-                    _info(line)
                 print()
-
-            if name == "codex":
-                _codex_auth_flow()
-
-            elif name in ("claude", "antigravity"):
-                # Run auth command interactively — it owns the TTY for browser redirect
-                auth_cmd = agent.get("auth_cmd")
-                if auth_cmd:
-                    _info(f"Running:  {B}{' '.join(auth_cmd)}{R}")
-                    _info(f"{DIM}Your browser will open for login — follow the prompts.{R}")
-                    print()
-                    import subprocess as _sp
-                    try:
-                        _sp.run(auth_cmd, check=False)
-                    except Exception as exc:
-                        _warn(f"auth command failed: {exc}")
+                while True:
+                    raw = prompt_input(
+                        f"  Press Enter after installing {label} to check, or esc to cancel › "
+                    )
+                    if raw is None:
                         return False
-                else:
-                    auth_url = agent.get("auth_url", "")
-                    if auth_url:
-                        _info(f"Open:  {B}{auth_url}{R}")
-                        try:
-                            import subprocess as _sp
-                            _sp.run(["open", auth_url], check=False)
-                        except Exception:
-                            pass
-                    prompt_input("  Press Enter once login is complete (esc to skip) › ")
+                    agent = next((a for a in detect_agent_clis() if a["name"] == name), agent)
+                    if agent.get("installed"):
+                        _ok(f"{label} detected")
+                        fresh_install = True
+                        break
+                    _warn(f"{label} not found yet — install it first, then press Enter again")
 
-            # Re-detect after auth
-            agent = next(
-                (a for a in detect_agent_clis() if a["name"] == name),
-                agent,
-            )
+        # ── Step 2: Auth — always after fresh install, or when not yet authed ─
+        if agent.get("installed") and (fresh_install or not agent.get("authed")):
+            _run_auth(agent)
+            agent = next((a for a in detect_agent_clis() if a["name"] == name), agent)
 
         # ── Step 3: Verify ────────────────────────────────────────────────────
+        print()
         if agent.get("available"):
             _ok(f"{label} is ready")
         elif agent.get("installed"):
-            _warn(f"{label} installed but auth not confirmed — check manually")
+            _warn(f"{label} installed but auth not confirmed")
+            _info(f"Run manually:  {' '.join(agent.get('auth_cmd') or [label, 'auth', 'login'])}")
         else:
-            _warn(f"{label} not fully set up")
+            _warn(f"{label} not set up")
             return False
 
         # ── Step 4: Set as center? ────────────────────────────────────────────
@@ -604,7 +621,7 @@ def run_agents_cmd(target: Path) -> int:  # noqa: C901
             if confirm(f"Set {B}{label}{R} as preferred center for {target.name}?", default=False):
                 run_center(target, action="set", value=name)
                 center = name
-                _ok(f"Center set to  {B}{name}{R}")
+                _ok(f"Center → {name}")
 
         return agent.get("available", False)
 
