@@ -66,8 +66,12 @@ class MenuItem(NamedTuple):
     desc:  str = ""     # dim second line (optional)
 
 
-def menu(title: str, items: list[MenuItem], version: str = "") -> str | None:
-    """Display an Ollama-style interactive menu.
+def menu(title: str, items: list[MenuItem], version: str = "",
+         compact: bool = False) -> str | None:
+    """Display an interactive menu.
+
+    compact=True  — one line per item: "▸ label   desc", no blank lines between items.
+    compact=False — two lines per item: bold label, then dim desc on next line (Ollama style).
 
     Returns the `key` of the selected item, or None if user pressed Esc/q.
     Falls back to numbered prompt when stdin is not a tty.
@@ -75,34 +79,45 @@ def menu(title: str, items: list[MenuItem], version: str = "") -> str | None:
     if not _is_tty():
         print(f"\n{title}")
         for i, item in enumerate(items):
-            print(f"  {i + 1}. {item.label}")
+            suffix = f"  {item.desc}" if item.desc else ""
+            print(f"  {i + 1}. {item.label}{suffix}")
         raw = input(f"Enter number [1-{len(items)}]: ").strip()
         try:
             return items[int(raw) - 1].key
         except (ValueError, IndexError):
             return None
 
+    # pre-compute label column width for compact mode
+    _lcol = max((len(item.label) for item in items), default=0) + 2
+
     idx        = 0
     line_count = 0
 
-    def _render(first: bool = False) -> int:
+    def _render(first: bool = False) -> list[str]:
         out = []
         if first:
-            # title + version header
             header = f"{BOLD}{title}{RESET}"
             if version:
                 header += f"  {DIM}{version}{RESET}"
             out.append(header)
             out.append("")
         for i, item in enumerate(items):
-            if i == idx:
-                bullet = f"{CYAN}{BOLD}▸ {item.label}{RESET}"
-                out.append(f"  {bullet}")
+            active = (i == idx)
+            if compact:
+                desc_part = f"  {DIM}{item.desc}{RESET}" if item.desc else ""
+                if active:
+                    out.append(f"  {CYAN}{BOLD}▸ {item.label:<{_lcol}}{RESET}{desc_part}")
+                else:
+                    out.append(f"    {DIM}{item.label:<{_lcol}}{RESET}{DIM}{item.desc}{RESET}" if item.desc
+                               else f"    {DIM}{item.label}{RESET}")
             else:
-                out.append(f"    {DIM}{item.label}{RESET}")
-            if item.desc:
-                out.append(f"    {DIM}{item.desc}{RESET}")
-            out.append("")
+                if active:
+                    out.append(f"  {CYAN}{BOLD}▸ {item.label}{RESET}")
+                else:
+                    out.append(f"    {DIM}{item.label}{RESET}")
+                if item.desc:
+                    out.append(f"    {DIM}{item.desc}{RESET}")
+                out.append("")
         out.append(f"{DIM}↑/↓ navigate  •  enter select  •  esc quit{RESET}")
         return out
 

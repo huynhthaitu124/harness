@@ -1370,32 +1370,20 @@ def _ensure_path(bin_dir: Path) -> None:
 
 _VERSION = "1.0"
 
-# Shown in the interactive ↑↓ TUI menu
+# Shown in the interactive ↑↓ TUI menu  (label = command name, desc = one-line summary)
 _MENU_ITEMS = [
-    ("init",         "Initialize harness for this project",
-                     "Detect stack, build BM25 + semantic RAG index, write HARNESS.md"),
-    ("update",       "Update harness + optionally refresh project",
-                     "Pull latest from GitHub; regenerate docs/MCP schema for this project"),
-    ("run",          "Run a ticket task with pre-loaded RAG context",
-                     "Build pack → inject → launch agent — agent cannot skip context"),
-    ("rag-pack",     "Build shared RAG pack for all centers",
-                     "Writes .harness/context_packs/last-rag-pack.md"),
-    ("mcp register", "Register MCP server in all agent configs",
-                     "Writes .mcp.json, CLAUDE.md, AGENTS.md, GEMINI.md, ~/.gemini/* configs"),
-    ("mcp status",   "Show MCP registration state",
-                     "Check which agents have harness registered"),
-    ("center",       "Set preferred routing center",
-                     "Choose auto / codex / claude / antigravity for this project"),
-    ("status",       "Show project state",
-                     "Memory records, feature progress, routing policy"),
-    ("index",        "Build / rebuild semantic RAG index",
-                     "Pick Ollama model interactively, embed all chunks"),
-    ("grill",        "Fill [CUSTOMIZE] section interactively",
-                     "Q&A session that writes project context into HARNESS.md"),
-    ("analyze",      "Analyze project and print profile",
-                     "Language detection, keywords, key files — JSON output"),
-    ("eject",        "Remove harness config, keep data",
-                     "Deletes .harness/, HARNESS.md, HARNESS.html from the project"),
+    ("init",         "init",         "Full project init: detect stack → agent research → write HARNESS.html"),
+    ("update",       "update",       "Pull latest from GitHub; optionally regenerate docs/MCP for this project"),
+    ("run",          "run",          "Build RAG pack + launch agent with context pre-loaded"),
+    ("rag-pack",     "rag-pack",     "Build task-keyed RAG context pack  [--ticket ID]"),
+    ("mcp register", "mcp register", "Register harness server in .mcp.json + ~/.gemini/* configs"),
+    ("mcp status",   "mcp status",   "Show MCP registration state across all agent configs"),
+    ("center",       "center",       "Set preferred routing center: auto / codex / claude / antigravity"),
+    ("status",       "status",       "Show routing center, memory, features, MCP health"),
+    ("index",        "index",        "Build / rebuild BM25 + semantic RAG index"),
+    ("grill",        "grill",        "Q&A session — fills [CUSTOMIZE] section in HARNESS.md"),
+    ("analyze",      "analyze",      "Print project profile JSON (language, framework, entry points)"),
+    ("eject",        "eject",        "Remove .harness/, HARNESS.md, HARNESS.html from project"),
 ]
 
 # Flat command reference printed before the TUI when harness is run with no args
@@ -1469,17 +1457,67 @@ def _pick_center(target: Path) -> None:
 
 
 def launch_menu(target: Path) -> None:
-    """Print all commands with descriptions and exit — no interactive TUI."""
-    col = max(len(cmd) for cmd, _ in _ALL_COMMANDS) + 2
-    info = _project_info(target)
+    from harness_core.tui import MenuItem, menu, confirm
 
-    print()
-    print(f"  {B}Harness {_VERSION}{R}   {DIM}{info}{R}")
-    print()
-    for cmd, desc in _ALL_COMMANDS:
-        print(f"  {C}{cmd:<{col}}{R}{desc}")
-    print()
-    print(f"  {DIM}harness <command> [--path PATH]{R}")
+    items = [MenuItem(key=k, label=lbl, desc=desc) for k, lbl, desc in _MENU_ITEMS]
+
+    info  = _project_info(target)
+    title = f"Harness {_VERSION}   {DIM}{info}{R}"
+
+    while True:
+        chosen = menu(title, items, compact=True)
+        if chosen is None:
+            break
+
+        print(f"\n{C}── {chosen} ──{R}\n")
+
+        try:
+            if chosen == "init":
+                run_init(target)
+            elif chosen == "update":
+                run_update(target)
+            elif chosen == "run":
+                try:
+                    task = input(f"  {DIM}Task description:{R} ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    continue
+                if task:
+                    run_ticket(target, task, ticket_id=None, agent_name=None)
+            elif chosen == "rag-pack":
+                try:
+                    query = input(f"  {DIM}Task/query:{R} ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    continue
+                if query:
+                    run_rag_pack(target, query=query)
+            elif chosen == "mcp register":
+                run_mcp(target, "register")
+            elif chosen == "mcp status":
+                run_mcp(target, "status")
+            elif chosen == "center":
+                _pick_center(target)
+            elif chosen == "status":
+                run_status(target)
+            elif chosen == "index":
+                run_index(target)
+            elif chosen == "grill":
+                run_grill(target)
+            elif chosen == "analyze":
+                run_analyze(target)
+            elif chosen == "eject":
+                ok = confirm("Remove .harness/, HARNESS.md, HARNESS.html?", default=False)
+                if ok:
+                    run_eject(target)
+                else:
+                    print("  cancelled")
+        except KeyboardInterrupt:
+            print("\n  interrupted")
+
+        print()
+        info  = _project_info(target)
+        title = f"Harness {_VERSION}   {DIM}{info}{R}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
