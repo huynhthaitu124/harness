@@ -755,6 +755,25 @@ For **every task, bug, or ticket** — regardless of how it arrives:
 
 Full reference (all tools, 6 tiers): `.harness/mcp_schema.md`
 
+## Workflow Command
+
+`harness workflow` — agent-driven task execution with smart planning:
+
+| Keyword in task | Mode detected | What happens |
+|----------------|--------------|-------------|
+| "plan", "grill me", "spec", "design" | **grill** | Q&A session → spec HTML → agent executes |
+| "typo", "rename", "fix", "tweak" | **quick** | Direct execution — no planning needed |
+| anything else | **auto** | LLM (Ollama) decides, falls back to grill |
+
+When a prompt starts with `== HARNESS WORKFLOW TASK ==`:
+1. Read `.harness/specs/<date>-<slug>.html` (the spec file listed in the prompt)
+2. Load `harness_ticket_context` for code context
+3. Follow the **Implementation Plan** in the spec step by step
+4. Call `harness_record_memory` with key decisions after completing
+
+Spec files live in `.harness/specs/`.
+Reusable patterns are saved to `.harness/evaluations/`.
+
 ## Project Docs
 
 Open `HARNESS.html` for architecture, key modules, conventions, and ticket workflow.

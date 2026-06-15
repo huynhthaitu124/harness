@@ -644,6 +644,161 @@ def run_eject(target: Path, *, dry_run: bool = False) -> int:
     return 0
 
 
+def run_workflow_cmd(target: Path) -> int:  # noqa: C901
+    """Interactive workflow: grill session → spec HTML → agent execution."""
+    from harness_core.tui import prompt_input, menu, MenuItem
+    from harness_core.workflow_runner import (
+        resolve_mode,
+        generate_grill_questions,
+        generate_plan,
+        generate_spec_html,
+        check_should_evaluate,
+        save_evaluation,
+        save_spec,
+        build_workflow_prompt,
+        _invoke_agent,
+    )
+    from harness_core.agent_research import detect_agent_clis
+
+    # ── Task input ────────────────────────────────────────────────────────────
+    print()
+    _info(f"Workflow  {DIM}{target.name}{R}")
+    print()
+    task = prompt_input(f"{B}Task{R} › ")
+    if not task:
+        _info("Cancelled.")
+        return 0
+
+    # ── Load project metadata ─────────────────────────────────────────────────
+    project_json = target / ".harness" / "project.json"
+    project_name = target.name
+    language = "unknown"
+    if project_json.exists():
+        try:
+            meta = json.loads(project_json.read_text(encoding="utf-8"))
+            project_name = meta.get("project_name", project_name)
+            language     = meta.get("language", language)
+        except Exception:
+            pass
+
+    # ── Mode resolution ───────────────────────────────────────────────────────
+    print()
+    _info("Detecting task complexity ...")
+    mode = resolve_mode(task)
+    mode_label = {
+        "grill": f"{G}planning mode{R}  {DIM}(complex — Q&A + spec){R}",
+        "quick": f"{Y}quick mode{R}  {DIM}(lightweight — direct execution){R}",
+    }.get(mode, f"{DIM}{mode}{R}")
+    _row("Mode", mode_label)
+
+    # Allow user to override
+    print()
+    override = menu(
+        "Confirm mode or switch:",
+        [
+            MenuItem("keep",  "Keep detected mode", f"proceed as  {mode}"),
+            MenuItem("grill", "Switch to planning", "run Q&A + generate spec"),
+            MenuItem("quick", "Switch to quick",    "skip planning, execute directly"),
+        ],
+        compact=True,
+    )
+    if override is None:
+        _info("Cancelled.")
+        return 0
+    if override != "keep":
+        mode = override
+
+    # ── Agent selection ───────────────────────────────────────────────────────
+    agents = [a for a in detect_agent_clis() if a.get("available")]
+    if not agents:
+        _warn("No agent available — spec will be saved but not executed.")
+        agent_choice = None
+    else:
+        agent_items = [MenuItem(a["name"], a["label"], a.get("detail", "")) for a in agents]
+        agent_items.append(MenuItem("skip", "Save spec only", "don't invoke an agent"))
+        print()
+        agent_choice = menu("Which agent should execute the task?", agent_items, compact=True)
+        if agent_choice is None or agent_choice == "skip":
+            agent_choice = None
+
+    # ── Grill session ─────────────────────────────────────────────────────────
+    answers: dict[str, str] = {}
+    plan = ""
+    spec_path = None
+
+    if mode == "grill":
+        print()
+        _info("Generating clarifying questions ...")
+        snippet = ""
+        try:
+            from harness_core.project_analyzer import build_analysis_context, extract_key_files
+            snippet = build_analysis_context(target, extract_key_files(target), max_chars=800)
+        except Exception:
+            pass
+
+        questions = generate_grill_questions(task, project_name, language, snippet)
+
+        print()
+        _info(f"Answer each question  {DIM}(enter to confirm, esc to skip){R}")
+        for q in questions:
+            print()
+            print(f"  {BOLD}{q}{RESET}")
+            ans = prompt_input(f"  {DIM}›{R} ")
+            if ans:
+                answers[q] = ans
+
+        if answers:
+            print()
+            _info("Generating implementation plan ...")
+            plan = generate_plan(task, answers, language)
+
+            agent_name_for_html = agent_choice or "harness"
+            html = generate_spec_html(task, mode, answers, plan, project_name, agent_name_for_html)
+            spec_path = save_spec(target, task, html)
+            _ok(f"Spec saved  {DIM}{spec_path.relative_to(target)}{R}")
+
+            # Detect reusable pattern
+            try:
+                should_eval, reason = check_should_evaluate(task, answers)
+                if should_eval:
+                    ep = save_evaluation(target, task, reason, answers)
+                    _ok(f"Evaluation saved  {DIM}{ep.relative_to(target)}{R}")
+                    _info(f"  {DIM}Pattern: {reason}{R}")
+            except Exception:
+                pass
+        else:
+            _warn("No answers — proceeding in quick mode.")
+            mode = "quick"
+
+    # ── Build prompt + show ───────────────────────────────────────────────────
+    prompt = build_workflow_prompt(task, mode, answers, plan, spec_path, target)
+
+    # Save prompt as .harness/workflow-task.md for reference / manual paste
+    task_md = target / ".harness" / "workflow-task.md"
+    task_md.write_text(prompt, encoding="utf-8")
+
+    print()
+    print(f"{DIM}{'─'*60}{R}")
+    print(prompt)
+    print(f"{DIM}{'─'*60}{R}")
+    _info(f"Prompt also saved to  {DIM}.harness/workflow-task.md{R}")
+
+    # ── Invoke agent ──────────────────────────────────────────────────────────
+    if agent_choice:
+        print()
+        _info(f"Invoking {B}{agent_choice}{R} ...")
+        print()
+        rc = _invoke_agent(agent_choice, prompt, target)
+        if rc == 2:
+            _warn(f"Agent '{agent_choice}' CLI not found — copy prompt above and paste into your agent.")
+        elif rc != 0:
+            _warn(f"Agent exited with code {rc}")
+    else:
+        _info(f"Copy the prompt above and give it to your agent ({DIM}CLAUDE.md / GEMINI.md agent{R}).")
+
+    return 0
+
+
 def run_analyze(target: Path) -> int:
     from harness_core.project_init import analyze_project
 
@@ -1426,6 +1581,7 @@ _VERSION = "1.0"
 
 # Shown in the interactive ↑↓ TUI menu  (label = command name, desc = one-line summary)
 _MENU_ITEMS = [
+    ("workflow",     "workflow",     "Agent-driven task: grill session → spec → agent executes"),
     ("init",         "init",         "Full project init: detect stack → agent research → write HARNESS.html"),
     ("update",       "update",       "Pull latest from GitHub; optionally regenerate docs/MCP for this project"),
     ("run",          "run",          "Build RAG pack + launch agent with context pre-loaded"),
@@ -1526,7 +1682,9 @@ def launch_menu(target: Path) -> None:
         print(f"\n{C}── {chosen} ──{R}\n")
 
         try:
-            if chosen == "init":
+            if chosen == "workflow":
+                run_workflow_cmd(target)
+            elif chosen == "init":
                 run_init(target)
             elif chosen == "update":
                 run_update(target)
@@ -1602,10 +1760,11 @@ def main() -> int:
     p_rag.add_argument("--center", choices=["project", "auto", "codex", "claude", "antigravity"], default="project")
     p_rag.add_argument("--local-model", default=None)
 
-    sub.add_parser("analyze", help="Print project profile JSON")
-    sub.add_parser("grill",   help="Fill [CUSTOMIZE] section interactively")
-    sub.add_parser("status",  help="Show harness state")
-    sub.add_parser("index",   help="Build/rebuild semantic RAG index")
+    sub.add_parser("workflow", help="Agent-driven task: grill session → spec HTML → agent executes")
+    sub.add_parser("analyze",  help="Print project profile JSON")
+    sub.add_parser("grill",    help="Fill [CUSTOMIZE] section interactively")
+    sub.add_parser("status",   help="Show harness state")
+    sub.add_parser("index",    help="Build/rebuild semantic RAG index")
 
     p_run = sub.add_parser("run", help="Build RAG pack for a task and launch the selected agent with context pre-loaded")
     p_run.add_argument("task", help="Task description or ticket title")
@@ -1634,6 +1793,8 @@ def main() -> int:
         return 0
 
     # ── direct subcommand (for scripting / CI) ────────────────────────────────
+    if args.command == "workflow":
+        return run_workflow_cmd(target)
     if args.command == "init":
         return run_init(target, dry_run=args.dry_run, skip_index=args.skip_index,
                         from_analysis=getattr(args, "from_analysis", None))

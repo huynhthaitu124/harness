@@ -41,6 +41,7 @@ _HARNESS_BLOCK_END   = "<!-- harness:end -->"
 def _harness_instruction_block(root: Path, harness_root: Path | None = None) -> str:
     """Return the mandatory harness block to inject into agent instruction files."""
     harness_md = root / "HARNESS.md"
+    specs_dir  = root / ".harness" / "specs"
     return f"""{_HARNESS_BLOCK_START}
 ## Harness
 
@@ -51,6 +52,11 @@ source files before loading Harness context.
 - Project root : `{root}`
 - Rules + tools: `{harness_md}` (mandatory first-step rule, Tier-1 MCP table)
 - Full docs    : `{root}/HARNESS.html` (architecture, modules, conventions, tickets)
+
+**Workflow tasks** (`harness workflow`): when you receive a prompt that starts with
+`== HARNESS WORKFLOW TASK ==`, check `{specs_dir}` for the matching spec HTML file,
+read it fully before touching any source file, then follow the Implementation Plan
+step by step.  Record key decisions with `harness_record_memory` after completing.
 {_HARNESS_BLOCK_END}"""
 
 
