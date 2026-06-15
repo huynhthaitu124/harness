@@ -22,6 +22,30 @@ def _project_root(path: str | None) -> Path:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Pretty output helpers  (Ollama-style — no JSON noise)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_NO_COLOR = bool(os.environ.get("NO_COLOR")) or not sys.stdout.isatty()
+
+def _c(code: str) -> str:
+    return "" if _NO_COLOR else code
+
+G  = _c("\x1b[32m")   # green
+C  = _c("\x1b[36m")   # cyan
+Y  = _c("\x1b[33m")   # yellow
+DIM = _c("\x1b[2m")
+B  = _c("\x1b[1m")
+R  = _c("\x1b[0m")
+
+
+def _ok(msg: str)   -> None: print(f"  {G}✓{R}  {msg}")
+def _info(msg: str) -> None: print(f"  {C}·{R}  {msg}")
+def _warn(msg: str) -> None: print(f"  {Y}!{R}  {msg}")
+def _row(label: str, value: str) -> None:
+    print(f"  {DIM}{label:<18}{R}{B}{value}{R}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Command implementations  (unchanged logic, called both from TUI and CLI)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -32,31 +56,51 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
              from_analysis: str | None = None) -> int:
     from harness_core.project_init import analyze_project, init_project_full
 
+    print(f"\n{B}Analyzing{R} {DIM}{target.name}{R} ...")
+
     if from_analysis:
         p = Path(from_analysis).expanduser()
         if not p.exists():
-            print(f"error: analysis file not found: {p}", file=sys.stderr)
+            _warn(f"analysis file not found: {p}")
             return 2
         analysis = json.loads(p.read_text(encoding="utf-8"))
-        print(f"[harness init] using analysis from {p}")
     else:
-        print(f"[harness init] analyzing {target} ...")
         analysis = analyze_project(target)
-        lang = analysis["language"]
-        fw   = analysis.get("framework", "")
-        print(f"[harness init] detected {lang}" + (f"/{fw}" if fw else ""))
+
+    lang      = analysis.get("language", "unknown")
+    fw        = analysis.get("framework", "")
+    secondary = analysis.get("secondary_languages", [])
+    stack     = f"{lang}" + (f"/{fw}" if fw else "") + (f"  +{', '.join(secondary)}" if secondary else "")
+    _row("Stack",    stack)
+    _row("Project",  analysis.get("project_name", target.name))
+    entries = analysis.get("entry_points", [])
+    if entries:
+        _row("Entry points", str(len(entries)))
 
     if dry_run:
-        print("[harness init] dry-run — no files will be written")
+        _warn("dry-run — no files will be written")
+        return 0
 
-    result = init_project_full(target, HARNESS_ROOT, analysis, dry_run=dry_run, skip_index=skip_index)
+    print()
+    result = init_project_full(target, HARNESS_ROOT, analysis, dry_run=False, skip_index=skip_index)
+    _install_symlink(result)
 
-    if not dry_run:
-        _install_symlink(result)
+    created = result.get("created", [])
+    # Show only the meaningful artifacts, not every individual file
+    artifacts = [
+        (".harness/", "configuration + BM25 index"),
+        ("HARNESS.md", "project guidelines doc"),
+        ("HARNESS.html", "visual architecture doc"),
+        ("configs/claude-mcp.json", "MCP server config"),
+        ("production_artifacts/memory.jsonl", "seeded memory records"),
+    ]
+    for rel, desc in artifacts:
+        matched = any(rel.rstrip("/") in c for c in created)
+        if matched:
+            _ok(f"{B}{rel}{R}  {DIM}{desc}{R}")
 
-    print(json.dumps(result, indent=2, ensure_ascii=False))
-
-    if not dry_run and not skip_index:
+    print()
+    if not skip_index:
         _maybe_build_semantic_index(target)
 
     return 0
@@ -64,36 +108,68 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
 
 def run_eject(target: Path, *, dry_run: bool = False) -> int:
     removed: list[str] = []
-    skipped: list[str] = []
 
     for rel in HARNESS_PATHS:
         path = target / rel
         if not path.exists():
-            skipped.append(rel)
             continue
         if dry_run:
-            print(f"  [dry-run] would remove {'dir' if path.is_dir() else 'file'}: {path}")
+            _info(f"would remove  {DIM}{rel}{R}")
         else:
             shutil.rmtree(path) if path.is_dir() else path.unlink()
-        removed.append(str(path))
+            _ok(f"removed  {DIM}{rel}{R}")
+        removed.append(rel)
 
     configs_dir = target / "configs"
     if configs_dir.exists() and not any(configs_dir.iterdir()):
         if not dry_run:
             configs_dir.rmdir()
-        removed.append(str(configs_dir))
+        removed.append("configs/")
 
-    print(json.dumps({
-        "root": str(target), "dry_run": dry_run,
-        "removed": removed, "skipped": skipped,
-        "kept": str(target / "production_artifacts"),
-    }, indent=2, ensure_ascii=False))
+    if not removed:
+        _info("nothing to remove — project was not initialized")
+    else:
+        print()
+        _info(f"kept  {DIM}production_artifacts/{R}  (data preserved)")
+
     return 0
 
 
 def run_analyze(target: Path) -> int:
     from harness_core.project_init import analyze_project
-    print(json.dumps(analyze_project(target), indent=2, ensure_ascii=False))
+
+    print(f"\n{B}Analyzing{R} {DIM}{target.name}{R} ...")
+    a = analyze_project(target)
+
+    lang      = a.get("language", "unknown")
+    fw        = a.get("framework", "")
+    secondary = a.get("secondary_languages", [])
+    stack     = f"{lang}" + (f"/{fw}" if fw else "") + (f"  +{', '.join(secondary)}" if secondary else "")
+
+    print()
+    _row("Stack",    stack)
+    _row("Project",  a.get("project_name", target.name))
+
+    entries = a.get("entry_points", [])
+    for i, e in enumerate(entries[:5]):
+        label = "Entry points" if i == 0 else ""
+        _row(label, Path(e).name)
+
+    kw_research = a.get("routing_keywords", {}).get("research_heavy_keywords", [])
+    kw_coding   = a.get("routing_keywords", {}).get("coding_keywords", [])
+    if kw_research:
+        _row("Research keys", ", ".join(kw_research[:5]))
+    if kw_coding:
+        _row("Coding keys",   ", ".join(kw_coding[:5]))
+
+    features = a.get("initial_features", [])
+    if features:
+        print()
+        _info(f"{len(features)} features seeded")
+    memories = a.get("initial_memories", [])
+    if memories:
+        _info(f"{len(memories)} memory records ready")
+    print()
     return 0
 
 
@@ -139,23 +215,45 @@ def run_status(target: Path) -> int:
     project_json = target / ".harness" / "project.json"
     memory_path  = target / "production_artifacts" / "memory.jsonl"
     feature_path = target / "production_artifacts" / "feature_list.json"
+    semantic_idx = target / "production_artifacts" / "indexes" / "semantic.json"
 
-    initialized = state_path.exists()
-    result: dict = {"root": str(target), "initialized": initialized}
+    print()
+    if not state_path.exists():
+        _warn("not initialized — run  harness init")
+        return 0
 
-    if initialized:
-        result["state"] = json.loads(state_path.read_text(encoding="utf-8"))
     if project_json.exists():
-        result["project"] = json.loads(project_json.read_text(encoding="utf-8"))
+        d    = json.loads(project_json.read_text(encoding="utf-8"))
+        lang = d.get("language", "?")
+        fw   = d.get("framework", "")
+        sec  = d.get("secondary_languages", [])
+        stack = f"{lang}" + (f"/{fw}" if fw else "") + (f"  +{', '.join(sec)}" if sec else "")
+        _row("Project",   d.get("project_name", target.name))
+        _row("Stack",     stack)
+        _row("Analyzed",  d.get("analyzed_at", "")[:10])
+
+    if state_path.exists():
+        state  = json.loads(state_path.read_text(encoding="utf-8"))
+        center = state.get("preferred_center", "auto")
+        _row("Center",    center)
+
+    print()
     if memory_path.exists():
-        lines = [l for l in memory_path.read_text(encoding="utf-8").splitlines() if l.strip()]
-        result["memory_records"] = len(lines)
+        n = sum(1 for l in memory_path.read_text(encoding="utf-8").splitlines() if l.strip())
+        _row("Memory",    f"{n} records")
+    else:
+        _row("Memory",    "0 records")
+
     if feature_path.exists():
         features = json.loads(feature_path.read_text(encoding="utf-8")).get("features", [])
-        done = sum(1 for f in features if f.get("status") == "done")
-        result["features"] = {"total": len(features), "done": done, "pending": len(features) - done}
+        done     = sum(1 for f in features if f.get("status") == "done")
+        bar      = ("█" * done + "░" * (len(features) - done)) if features else ""
+        _row("Features",  f"{done}/{len(features)}  {DIM}{bar}{R}")
 
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    bm25 = target / ".harness" / "index.json"
+    _row("BM25 index",  f"{G}ready{R}" if bm25.exists() else f"{Y}missing{R}")
+    _row("Semantic idx", f"{G}ready{R}" if semantic_idx.exists() else f"{DIM}not built{R}")
+    print()
     return 0
 
 
@@ -171,16 +269,12 @@ def _maybe_build_semantic_index(target: Path) -> None:
     all_models = embed_models + other_models
 
     if not all_models:
-        print(
-            "\n[harness] Ollama not running — skipping semantic index.\n"
-            "          Start Ollama then pull an embedding model:\n"
-            "            ollama pull nomic-embed-text\n"
-            "          Then retry: harness  →  index"
-        )
+        _warn("Ollama not running — semantic index skipped")
+        _info("start Ollama, pull a model, then:  harness  →  index")
         return
 
     if not confirm("Build semantic RAG index with Ollama?", default=True):
-        print("[harness] Semantic index skipped.")
+        _info("semantic index skipped")
         return
 
     # Build menu items — embedding models first with a clear label
@@ -192,24 +286,22 @@ def _maybe_build_semantic_index(target: Path) -> None:
                               desc="⚠ chat/code model — slow for embeddings, may fail"))
 
     if not embed_models:
-        print(
-            "\n\x1b[33m[harness] Warning: no dedicated embedding model found.\x1b[0m\n"
-            "  Chat models (qwen, llama, etc.) are not optimised for /api/embed.\n"
-            "  Recommended: ollama pull nomic-embed-text\n"
-        )
+        _warn("no dedicated embedding model found")
+        _info("chat models are slow for embeddings — recommended: ollama pull nomic-embed-text")
+        print()
 
     chosen = menu("Select Ollama model for embeddings:", items)
     if chosen is None:
-        print("[harness] Semantic index skipped.")
+        _info("semantic index skipped")
         return
 
     index_path = target / "production_artifacts" / "indexes" / "semantic.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n[harness] Building semantic index → {index_path}")
-    print(f"[harness] Model: {chosen}")
+    print()
+    _info(f"building semantic index with  {B}{chosen}{R} ...")
     if chosen in other_models:
-        print("[harness] Note: chat model selected — first run may be slow")
+        _warn("chat model selected — first run may be slow")
 
     try:
         stats   = build_semantic_index(target, index_path,
@@ -218,13 +310,11 @@ def _maybe_build_semantic_index(target: Path) -> None:
         total   = stats.get("chunk_count", "?")
         reused  = stats.get("reused_count", 0)
         new_vec = stats.get("embedded_count", total)
-        print(f"[harness] Done — {total} chunks  ({new_vec} embedded, {reused} reused)")
+        _ok(f"semantic index ready  {DIM}{total} chunks  ({new_vec} embedded, {reused} cached){R}")
     except Exception as exc:
-        print(f"\n\x1b[33m[harness] Semantic index failed:\x1b[0m {exc}")
+        _warn(f"semantic index failed: {exc}")
         if chosen in other_models:
-            print("[harness] Fix: ollama pull nomic-embed-text  then retry: harness  →  index")
-        else:
-            print("[harness] Retry: harness  →  index")
+            _info("fix: ollama pull nomic-embed-text  then retry: harness  →  index")
 
 
 def _install_symlink(result: dict) -> None:
@@ -248,10 +338,10 @@ def _install_symlink(result: dict) -> None:
             continue
 
     if symlink is None:
-        print("[harness init] warning: could not install harness command (permission denied)")
+        _warn("could not install harness command (permission denied)")
         return
 
-    print(f"[harness init] installed: {symlink} → {this_script}")
+    _ok(f"installed  {DIM}{symlink}{R}")
     result["symlink"] = str(symlink)
 
     if symlink.parent == Path.home() / ".local" / "bin":
@@ -267,10 +357,9 @@ def _ensure_path(bin_dir: Path) -> None:
     try:
         with zshrc.open("a", encoding="utf-8") as f:
             f.write(f'\nexport PATH="{marker}:$PATH"  # added by harness init\n')
-        print(f"[harness init] added {marker} to PATH in {zshrc}")
-        print("[harness init] run `source ~/.zshrc` or open a new terminal")
+        _info(f"added {DIM}{marker}{R} to PATH in ~/.zshrc — run: source ~/.zshrc")
     except OSError as exc:
-        print(f"[harness init] warning: could not update {zshrc}: {exc}")
+        _warn(f"could not update ~/.zshrc: {exc}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
