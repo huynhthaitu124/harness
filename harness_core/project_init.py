@@ -23,6 +23,78 @@ from harness_core.project_analyzer import (
 from harness_core.router import default_state, save_state
 from harness_core.search_index import build_index
 
+# ── Agent instruction files that each tool reads at session start ─────────────
+_AGENT_INSTRUCTION_FILES = [
+    "CLAUDE.md",   # Claude Code
+    "AGENTS.md",   # Codex
+    "GEMINI.md",   # Antigravity / Gemini CLI
+]
+
+_HARNESS_BLOCK_START = "<!-- harness:start -->"
+_HARNESS_BLOCK_END   = "<!-- harness:end -->"
+
+
+def _harness_instruction_block(root: Path) -> str:
+    """Return the mandatory harness block to inject into agent instruction files."""
+    return f"""{_HARNESS_BLOCK_START}
+## Harness — Mandatory First Step
+
+For **every task, bug, or ticket** you receive in this project — regardless of how it arrives:
+
+1. **First tool call** must be `harness_ticket_context` (MCP):
+   - `root`: `{root}`
+   - `task`: the user's message or ticket description verbatim
+
+2. **If MCP is unavailable**, run this CLI command first:
+   ```bash
+   harness rag-pack "<task description>" [--ticket <id>]
+   ```
+   Then read `.harness/context_packs/last-rag-pack.md` before opening any source file.
+
+3. **Never** call `list_dir`, `read_file`, `grep_search`, `find`, or any file-reading tool
+   on source code until you have the Harness context pack. The pack tells you exactly
+   which files to open — cold exploration wastes tokens and misses conventions.
+
+Project root : `{root}`
+HARNESS.html : `{root}/HARNESS.html` (architecture, modules, conventions, ticket workflow)
+{_HARNESS_BLOCK_END}"""
+
+
+def inject_agent_instructions(root: Path) -> list[str]:
+    """Write or update the mandatory harness block in CLAUDE.md, AGENTS.md, GEMINI.md.
+
+    If the file already exists, replaces the block between the harness markers.
+    If the file doesn't exist yet, creates it with just the harness block so the
+    project owner can add more content later.
+
+    Returns list of files that were written or updated.
+    """
+    block   = _harness_instruction_block(root)
+    updated = []
+
+    for filename in _AGENT_INSTRUCTION_FILES:
+        path = root / filename
+        try:
+            if path.exists():
+                content = path.read_text(encoding="utf-8")
+                if _HARNESS_BLOCK_START in content:
+                    # Replace existing block
+                    start = content.index(_HARNESS_BLOCK_START)
+                    end   = content.index(_HARNESS_BLOCK_END) + len(_HARNESS_BLOCK_END)
+                    new_content = content[:start] + block + content[end:]
+                else:
+                    # Append block at end
+                    new_content = content.rstrip("\n") + "\n\n" + block + "\n"
+                path.write_text(new_content, encoding="utf-8")
+            else:
+                # Create minimal file — owner adds project-specific content above
+                path.write_text(block + "\n", encoding="utf-8")
+            updated.append(filename)
+        except Exception:
+            pass  # never fail init due to instruction injection
+
+    return updated
+
 
 def init_project_harness(root: Path, features: list[str]) -> dict[str, Any]:
     root.mkdir(parents=True, exist_ok=True)
@@ -165,6 +237,10 @@ def init_project_full(
     project_name = analysis.get("project_name", target_root.name)
     _write(target_root / "HARNESS.md",
            render_harness_md(analysis, harness_root / "scripts", project_name))
+
+    # ── inject mandatory first-call rule into agent instruction files ─────────
+    if not dry_run:
+        inject_agent_instructions(target_root)
 
     # ── save agent research if provided ──────────────────────────────────────
     if agent_sections and not dry_run:

@@ -780,8 +780,49 @@ def run_status(target: Path) -> int:
         _row("Local LLM",  f"{G}{local_model.get('model', 'ollama')}{R}  {DIM}{local_model.get('role', 'rag_distiller')}{R}")
     else:
         _row("Local LLM",  f"{DIM}not configured{R}")
-    pack = target / ".harness" / "context_packs" / "last-rag-pack.md"
-    _row("RAG pack", f"{G}ready{R}  {DIM}{pack}{R}" if pack.exists() else f"{DIM}not built — run harness rag-pack{R}")
+    # RAG pack — resolve symlink to show real file name
+    pack_sym = target / ".harness" / "context_packs" / "last-rag-pack.md"
+    if pack_sym.is_symlink() or pack_sym.exists():
+        real = pack_sym.resolve() if pack_sym.is_symlink() else pack_sym
+        _row("RAG pack",  f"{G}ready{R}  {DIM}{real.name}{R}")
+    else:
+        _row("RAG pack",  f"{DIM}not built — run: harness rag-pack \"<task>\"{R}")
+
+    # MCP server health
+    mcp_cfg = target / ".harness" / "mcp.json"
+    if mcp_cfg.exists():
+        try:
+            mcp_data = json.loads(mcp_cfg.read_text(encoding="utf-8"))
+            servers  = mcp_data.get("mcpServers", {})
+            ok_list  = []
+            bad_list = []
+            for sname, scfg in servers.items():
+                cmd = scfg.get("command", "")
+                if cmd and shutil.which(cmd) or Path(cmd).exists():
+                    ok_list.append(sname)
+                else:
+                    bad_list.append(sname)
+            if bad_list:
+                _row("MCP server",  f"{Y}!{R}  command not found: {', '.join(bad_list)}  {DIM}(run: python3 -m harness_mcp.server){R}")
+            elif ok_list:
+                _row("MCP server",  f"{G}configured{R}  {DIM}{', '.join(ok_list)}{R}")
+            else:
+                _row("MCP server",  f"{DIM}no servers in mcp.json{R}")
+        except Exception:
+            _row("MCP server",  f"{DIM}mcp.json unreadable{R}")
+    else:
+        _row("MCP server",  f"{Y}!{R}  .harness/mcp.json missing — run: harness init")
+
+    # Agent instruction files
+    _AGENT_FILES = ["CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+    injected = [f for f in _AGENT_FILES if (target / f).exists() and "harness:start" in (target / f).read_text(encoding="utf-8", errors="ignore")]
+    missing  = [f for f in _AGENT_FILES if (target / f).exists() and "harness:start" not in (target / f).read_text(encoding="utf-8", errors="ignore")]
+    if injected:
+        _row("Agent rules",  f"{G}injected{R}  {DIM}{', '.join(injected)}{R}")
+    if missing:
+        _row("Agent rules",  f"{Y}!{R}  harness block missing in: {', '.join(missing)}  {DIM}(re-run: harness init){R}")
+    if not injected and not missing:
+        _row("Agent rules",  f"{DIM}no agent files found — run: harness init{R}")
 
     # Lifecycle hooks
     hooks_path = target / ".harness" / "hooks.json"

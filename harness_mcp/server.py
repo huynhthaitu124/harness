@@ -91,7 +91,12 @@ TOOLS = [
     },
     {
         "name": "harness_route_task",
-        "description": "Decide which center should lead a task and whether RAG/local summarization should run before cloud work. Also returns suggested_model_tier (opus/sonnet/haiku) based on task complexity.",
+        "description": (
+            "FIRST STEP for any task when root is unknown. Returns routing center, model tier, "
+            "and (when root is provided) a pre-built context pack + workflow summary. "
+            "Prevents cold repo exploration — call this before any file-reading tool. "
+            "When root is known, prefer harness_ticket_context which returns more context."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1176,9 +1181,13 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any]:
                         "prompts": {"listChanged": False},
                     },
                     "instructions": (
-                        "Use harness_route_task before read-heavy, multi-agent, or coding tasks. "
-                        "Prefer RAG/context packs over raw file dumps. The user may switch center "
-                        "between codex, claude, antigravity, or auto."
+                        "MANDATORY: For every task, bug report, or ticket — your FIRST tool call "
+                        "must be harness_ticket_context(root=<project_root>, task=<task>). "
+                        "This returns RAG code chunks, workflow steps, critical rules, and routing "
+                        "in one call. Never call list_dir, read_file, grep, or find on source files "
+                        "before calling harness_ticket_context. If root is unknown, call "
+                        "harness_route_task(task=<task>) as a lighter alternative. "
+                        "The user may switch center between codex, claude, antigravity, or auto."
                     ),
                 },
             )
