@@ -176,16 +176,22 @@ def confirm(prompt: str, default: bool = True) -> bool:
 
     choice = default
 
-    def _render():
-        yes = f"{BOLD}{GREEN} YES {RESET}" if choice     else f"{DIM} yes {RESET}"
-        no  = f"{BOLD}{YELLOW} NO {RESET}"  if not choice else f"{DIM} no {RESET}"
+    def _render_choices() -> None:
+        # Only redraws the YES/NO line (line 2); prompt line is written once and left alone.
+        yes  = f"{BOLD}{GREEN} YES {RESET}" if choice     else f"{DIM} yes {RESET}"
+        no   = f"{BOLD}{YELLOW} NO {RESET}"  if not choice else f"{DIM} no {RESET}"
         hint = f"  {DIM}◀ ▶ toggle  •  enter confirm  •  q skip{RESET}"
-        sys.stdout.write(f"\r{_clr()}{BOLD}{prompt}{RESET}   {yes}  {no}{hint}  ")
+        sys.stdout.write(_up(1) + _clr() + f"  {yes}  {no}{hint}\n")
         sys.stdout.flush()
 
-    sys.stdout.write("\n")
     sys.stdout.write(_hide_cursor())
-    _render()
+    # Prompt on its own line; choices on the next line — safe to overwrite independently.
+    sys.stdout.write(f"\n{BOLD}{prompt}{RESET}\n")
+    yes  = f"{BOLD}{GREEN} YES {RESET}" if choice     else f"{DIM} yes {RESET}"
+    no   = f"{BOLD}{YELLOW} NO {RESET}"  if not choice else f"{DIM} no {RESET}"
+    hint = f"  {DIM}◀ ▶ toggle  •  enter confirm  •  q skip{RESET}"
+    sys.stdout.write(f"  {yes}  {no}{hint}\n")
+    sys.stdout.flush()
 
     try:
         while True:
@@ -194,9 +200,9 @@ def confirm(prompt: str, default: bool = True) -> bool:
                 sys.stdout.write(_show_cursor() + "\n")
                 return choice
             if key == "\x1b[D":   # left  → YES
-                choice = True;  _render()
+                choice = True;  _render_choices()
             elif key == "\x1b[C": # right → NO
-                choice = False; _render()
+                choice = False; _render_choices()
             elif key in ("q", "\x1b"):
                 sys.stdout.write(_show_cursor() + "\n")
                 return False
