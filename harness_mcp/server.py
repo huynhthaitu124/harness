@@ -101,6 +101,25 @@ TOOLS = [
             "required": ["task"],
         },
     },
+    {
+        "name": "harness_ticket_context",
+        "description": (
+            "Get full task context for a ticket in one call: RAG code chunks, workflow steps, "
+            "critical rules, branching instructions, and routing recommendation. "
+            "Call this FIRST before reading any source files — it replaces harness_route_task + "
+            "harness_contextual_context_pack when working on a specific ticket."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":      {"type": "string", "description": "Project root path"},
+                "task":      {"type": "string", "description": "Task description or ticket title"},
+                "ticket_id": {"type": "string", "description": "Ticket ID (e.g. WT-102, OP-456) — optional"},
+                "top_k":     {"type": "integer", "default": 5, "description": "Number of RAG chunks to include"},
+            },
+            "required": ["root", "task"],
+        },
+    },
     # ── Phase 1: Tiered model ─────────────────────────────────────────────────
     {
         "name": "harness_suggest_model_tier",
@@ -1196,14 +1215,79 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "harness_route_task":
         usage  = summarize_usage(ARTIFACTS_DIR / "usage.jsonl")
         result = choose_center(arguments["task"], state, usage_summary=usage)
-        # Load per-project state if root provided
         proj_state = state
         if arguments.get("root"):
-            proj_path = Path(arguments["root"]).expanduser() / ".harness" / "state.json"
+            proj_root = Path(arguments["root"]).expanduser()
+            proj_path = proj_root / ".harness" / "state.json"
             if proj_path.exists():
                 proj_state = load_state(proj_path)
+            # Include compact context pack inline so agents don't need a separate call
+            try:
+                from harness_core.contextual_chunks import build_contextual_context_pack
+                result["context_pack"] = build_contextual_context_pack(
+                    proj_root, arguments["task"], top_k=3, max_chars_per_chunk=800
+                )
+            except Exception:
+                result["context_pack"] = None
+            # Include workflow summary
+            try:
+                from harness_core.workflow_steps import load_workflow
+                wf = load_workflow(proj_root)
+                if wf:
+                    result["workflow"] = {
+                        "base_branch":    wf.get("base_branch", ""),
+                        "branch_pattern": wf.get("branch_pattern", ""),
+                        "build_cmd":      wf.get("build_cmd", ""),
+                        "critical_rules": wf.get("critical_rules", []),
+                    }
+            except Exception:
+                pass
         result["model_tier"] = suggest_model_tier(arguments["task"], proj_state)
         return _text(result)
+    if name == "harness_ticket_context":
+        from harness_core.contextual_chunks import build_contextual_context_pack
+        from harness_core.workflow_steps import load_workflow
+        proj_root  = Path(arguments["root"]).expanduser()
+        task       = arguments["task"]
+        ticket_id  = arguments.get("ticket_id", "")
+        top_k      = int(arguments.get("top_k", 5))
+
+        # RAG context chunks
+        try:
+            context_pack = build_contextual_context_pack(
+                proj_root, task, top_k=top_k, max_chars_per_chunk=1200
+            )
+        except Exception as exc:
+            context_pack = f"(context pack unavailable: {exc})"
+
+        # Workflow
+        wf = load_workflow(proj_root)
+        workflow_out: dict = {}
+        if wf:
+            workflow_out = {
+                "ticket_system":  wf.get("ticket_system", ""),
+                "ticket_url":     wf.get("ticket_url", ""),
+                "base_branch":    wf.get("base_branch", ""),
+                "branch_pattern": wf.get("branch_pattern", ""),
+                "build_cmd":      wf.get("build_cmd", ""),
+                "critical_rules": wf.get("critical_rules", []),
+                "steps":          wf.get("steps", []),
+            }
+
+        # Routing
+        proj_state_path = proj_root / ".harness" / "state.json"
+        proj_state = load_state(proj_state_path) if proj_state_path.exists() else state
+        routing = choose_center(task, proj_state,
+                                usage_summary=summarize_usage(ARTIFACTS_DIR / "usage.jsonl"))
+
+        return _text({
+            "ticket_id":   ticket_id,
+            "task":        task,
+            "center":      routing.get("center"),
+            "model_tier":  suggest_model_tier(task, proj_state),
+            "context_pack": context_pack,
+            "workflow":    workflow_out,
+        })
     if name == "harness_suggest_model_tier":
         proj_state = state
         if arguments.get("root"):

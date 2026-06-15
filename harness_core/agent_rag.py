@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,21 @@ from harness_core.router import CENTERS, load_state
 VALID_CENTERS = (*CENTERS, "auto", "project")
 
 
+def _cleanup_old_packs(packs_dir: Path, max_age_hours: int = 24) -> None:
+    """Delete .md files in packs_dir older than max_age_hours, skipping last-rag-pack.md."""
+    if not packs_dir.exists():
+        return
+    cutoff = time.time() - max_age_hours * 3600
+    for f in packs_dir.glob("*.md"):
+        if f.name == "last-rag-pack.md":
+            continue
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
+
+
 def build_agent_rag_pack(
     root: Path,
     task: str,
@@ -20,6 +37,7 @@ def build_agent_rag_pack(
     center: str = "project",
     local_model: str | None = None,
     max_payload_chars: int = 9000,
+    ticket_id: str | None = None,
 ) -> dict[str, Any]:
     if center not in VALID_CENTERS:
         raise ValueError(f"center must be one of: {', '.join(VALID_CENTERS)}")
@@ -44,8 +62,17 @@ def build_agent_rag_pack(
         sources.append("hybrid_rag")
 
     payload = _trim("\n\n".join(parts), max_payload_chars)
-    out_path = root / ".harness" / "context_packs" / "last-rag-pack.md"
+
+    packs_dir = root / ".harness" / "context_packs"
+    if ticket_id:
+        filename = f"{ticket_id}.md"
+    else:
+        task_hash = hashlib.md5(task.encode()).hexdigest()[:8]
+        filename = f"pack-{task_hash}.md"
+    out_path = packs_dir / filename
+    _cleanup_old_packs(packs_dir)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
     commands = _agent_commands(out_path, task, model)
     pack_text = render_agent_rag_pack(
         root=root,
@@ -58,6 +85,13 @@ def build_agent_rag_pack(
         commands=commands,
     )
     out_path.write_text(pack_text, encoding="utf-8")
+
+    # Update last-rag-pack.md symlink to point to the new file
+    symlink_path = packs_dir / "last-rag-pack.md"
+    if symlink_path.exists() or symlink_path.is_symlink():
+        symlink_path.unlink()
+    symlink_path.symlink_to(out_path.name)
+
     savings = measure_context_savings(root, payload)
     return {
         "verdict": "PASS" if payload.strip() else "NEEDS_WORK",

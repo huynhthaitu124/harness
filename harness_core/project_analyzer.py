@@ -611,6 +611,18 @@ HARNESS_ARTIFACTS_DIR → .harness/
 Open it in a browser: `open HARNESS.html`
 Or serve locally: `python3 -m http.server` then visit `http://localhost:8000/HARNESS.html`
 
+## Work Loop Rules
+
+**Rule 1 — Context before code:** Before reading any source file for a ticket, load task context first:
+- Via MCP (preferred): call `harness_contextual_context_pack` with `root` and the task as `query`
+- Via CLI: `harness rag-pack "<task description>" [--ticket <id>]`
+
+**Rule 2 — No cold exploration:** Never call `list_dir`, `grep`, or `read_file` on source files until RAG context is loaded. The context pack tells you exactly which files to open.
+
+**Rule 3 — Env var takes priority:** If `HARNESS_PACK_PATH` is set in the environment, read that file first — it was pre-built for this exact session.
+
+**Rule 4 — Ticket workflow is in HARNESS.html:** The Ticket Workflow section (section 08) contains the branch pattern, build command, and critical rules for this project. Read it before branching.
+
 <!-- agent-generated content lives in HARNESS.html, not here -->
 """
 

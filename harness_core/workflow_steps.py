@@ -69,7 +69,7 @@ def _default_steps() -> list[dict[str, str]]:
         {
             "id":     "01-context",
             "title":  "Load project context",
-            "detail": "Read HARNESS.html + HARNESS.md. Load any files listed in context_files.",
+            "detail": "Read HARNESS.html + HARNESS.md. Then fetch RAG context BEFORE reading source files: call harness_contextual_context_pack(query=<task>) via MCP, or run `harness rag-pack \"<task>\" --ticket <id>` via CLI.",
         },
         {
             "id":     "02-ticket",
@@ -139,7 +139,11 @@ def answers_to_workflow(grill_answers: dict[str, str]) -> dict[str, Any]:
     for step in wf["steps"]:
         if step["id"] == "01-context" and wf["context_files"]:
             files = ", ".join(wf["context_files"][:4])
-            step["detail"] = f"Read HARNESS.html + HARNESS.md. Also load: {files}."
+            step["detail"] = (
+                f"Read HARNESS.html + HARNESS.md. Also load: {files}. "
+                f"Then call harness_contextual_context_pack(query=<task>) or run "
+                f"`harness rag-pack \"<task>\" --ticket <id>` BEFORE reading source files."
+            )
         if step["id"] == "02-ticket" and wf["ticket_system"]:
             step["detail"] = (
                 f"Fetch from {wf['ticket_system']} ({wf['ticket_url'] or 'see project config'}). "

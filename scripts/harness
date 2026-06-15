@@ -574,6 +574,131 @@ def run_center(target: Path, *, action: str, value: str | None = None) -> int:
     return 0
 
 
+def _run_ollama_inline(model: str, prompt: str) -> None:
+    """Stream an Ollama response to stdout."""
+    import json as _json
+    import urllib.request as _ur
+
+    payload = _json.dumps({"model": model, "prompt": prompt, "stream": True}).encode()
+    req = _ur.Request("http://localhost:11434/api/generate", data=payload,
+                      headers={"Content-Type": "application/json"})
+    try:
+        with _ur.urlopen(req, timeout=300) as resp:
+            for line in resp:
+                token = _json.loads(line).get("response", "")
+                sys.stdout.write(token)
+                sys.stdout.flush()
+        print()
+    except Exception as exc:
+        _warn(f"Ollama error: {exc}")
+
+
+def run_ticket(
+    target: Path,
+    task: str,
+    *,
+    ticket_id: str | None = None,
+    agent_name: str | None = None,
+) -> int:
+    """Build RAG pack for task, inject into prompt, then launch the selected agent.
+
+    Agent cannot skip context loading — the pack is embedded in the prompt
+    before the agent process starts.
+    """
+    import subprocess as _sp
+
+    # ── 1. Build task-keyed RAG pack ─────────────────────────────────────────
+    print()
+    _info(f"Building context pack for:  {B}{task}{R}")
+    from harness_core.agent_rag import build_agent_rag_pack
+    try:
+        report = build_agent_rag_pack(target, task, ticket_id=ticket_id)
+        pack_path = Path(report["context_pack_path"])
+        _ok(f"pack ready  {DIM}{pack_path.name}  (~{report['payload_tokens_estimate']} tokens){R}")
+    except Exception as exc:
+        _warn(f"RAG pack build failed: {exc}")
+        _info("continuing without context pack")
+        pack_path = None
+
+    # ── 2. Load workflow critical rules ───────────────────────────────────────
+    from harness_core.workflow_steps import load_workflow
+    wf = load_workflow(target)
+
+    # ── 3. Build combined prompt ──────────────────────────────────────────────
+    parts: list[str] = []
+    if pack_path and pack_path.exists():
+        parts.append(pack_path.read_text(encoding="utf-8"))
+    if wf:
+        rules = wf.get("critical_rules") or []
+        build_cmd = wf.get("build_cmd") or ""
+        base_branch = wf.get("base_branch") or "main"
+        branch_pattern = wf.get("branch_pattern") or ""
+        if rules or build_cmd:
+            rule_lines = "\n".join(f"- {r}" for r in rules)
+            parts.append(
+                f"## Project Rules (from .harness/workflow.json)\n\n"
+                f"Base branch: `{base_branch}`\n"
+                + (f"Branch pattern: `{branch_pattern}`\n" if branch_pattern else "")
+                + (f"Verify with: `{build_cmd}`\n" if build_cmd else "")
+                + (f"\nCritical rules:\n{rule_lines}\n" if rule_lines else "")
+            )
+    parts.append(f"## Task\n\n{task}")
+    if ticket_id:
+        parts[-1] = f"## Task (Ticket: {ticket_id})\n\n{task}"
+
+    prompt = "\n\n---\n\n".join(parts)
+
+    # ── 4. Resolve agent ──────────────────────────────────────────────────────
+    resolved_agent = agent_name
+    if not resolved_agent:
+        # Read preferred agent from project state if available
+        state_path = target / ".harness" / "state.json"
+        if state_path.exists():
+            try:
+                import json as _json
+                st = _json.loads(state_path.read_text())
+                resolved_agent = st.get("preferred_agent") or st.get("preferred_center") or "claude"
+            except Exception:
+                resolved_agent = "claude"
+        else:
+            resolved_agent = "claude"
+
+    # ── 5. Set env vars and launch ────────────────────────────────────────────
+    env = os.environ.copy()
+    env["HARNESS_TASK"] = task
+    if ticket_id:
+        env["HARNESS_TICKET_ID"] = ticket_id
+    if pack_path:
+        env["HARNESS_PACK_PATH"] = str(pack_path)
+
+    print()
+    _info(f"Launching  {B}{resolved_agent}{R}  with pre-loaded context...")
+    print()
+
+    try:
+        if resolved_agent == "claude":
+            cmd = ["claude", "--print", prompt]
+            result = _sp.run(cmd, env=env, cwd=str(target))
+        elif resolved_agent == "codex":
+            cmd = ["codex", "exec", prompt]
+            result = _sp.run(cmd, env=env, cwd=str(target))
+        elif resolved_agent.startswith("ollama:"):
+            model = resolved_agent[len("ollama:"):]
+            _run_ollama_inline(model, prompt)
+            return 0
+        else:
+            _warn(f"Unknown agent '{resolved_agent}'. Printing prompt to stdout instead.")
+            print(prompt)
+            return 0
+        return result.returncode
+    except FileNotFoundError:
+        _warn(f"Agent '{resolved_agent}' not found. Install it or run `harness init` to configure.")
+        _info("Prompt has been prepared — you can copy it manually:")
+        print()
+        print(prompt[:2000] + ("..." if len(prompt) > 2000 else ""))
+        return 1
+
+
 def run_rag_pack(target: Path, *, query: str, center: str = "project", local_model: str | None = None) -> int:
     from harness_core.agent_rag import build_agent_rag_pack
 
@@ -1007,6 +1132,8 @@ _MENU_ITEMS = [
                 "Language detection, keywords, key files — JSON output"),
     ("eject",   "Remove harness config, keep data",
                 "Deletes .harness/, HARNESS.md, HARNESS.html from the project"),
+    ("run",     "Run a ticket task with pre-loaded RAG context",
+                "Build pack → inject → launch agent — agent cannot skip context"),
 ]
 
 
@@ -1155,8 +1282,14 @@ def main() -> int:
     sub.add_parser("status",  help="Show harness state")
     sub.add_parser("index",   help="Build/rebuild semantic RAG index")
 
+    p_run = sub.add_parser("run", help="Build RAG pack for a task and launch the selected agent with context pre-loaded")
+    p_run.add_argument("task", help="Task description or ticket title")
+    p_run.add_argument("--ticket", default=None, metavar="ID", help="Ticket ID (e.g. WT-102, OP-456)")
+    p_run.add_argument("--agent", default=None, metavar="NAME", help="Agent to use: claude, codex, ollama:<model>")
+    p_run.add_argument("path", nargs="?", default=None, metavar="PATH")
+
     for name, p in sub.choices.items():
-        if name not in {"center", "rag-pack"}:
+        if name not in {"center", "rag-pack", "run"}:
             p.add_argument("path", nargs="?", default=None, metavar="PATH")
 
     args = parser.parse_args()
@@ -1185,6 +1318,8 @@ def main() -> int:
         return run_index(target)
     if args.command == "status":
         return run_status(target)
+    if args.command == "run":
+        return run_ticket(target, args.task, ticket_id=getattr(args, "ticket", None), agent_name=getattr(args, "agent", None))
 
     parser.print_help()
     return 0
