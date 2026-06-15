@@ -43,13 +43,17 @@ Run `harness` with no arguments inside any project to open the interactive menu.
 |---|---|
 | `harness init` | Full project init: detect stack → pick agent → deep research → write `HARNESS.html` + `HARNESS.md` |
 | `harness grill` | Q&A session that fills the `[CUSTOMIZE]` section in `HARNESS.md` |
-| `harness status` | Show routing center, memory count, feature progress |
+| `harness status` | Show routing center, memory count, feature progress, MCP and agent rule health |
 | `harness analyze` | Print project profile JSON — language, framework, entry points |
 | `harness center set <center>` | Set preferred center for this project (`auto` / `codex` / `claude` / `antigravity`) |
 | `harness center get` | Show the current center |
-| `harness rag-pack "<task>"` | Build a shared RAG context pack for all centers |
+| `harness rag-pack "<task>" [--ticket ID]` | Build a task-keyed RAG context pack; symlinked as `last-rag-pack.md` for backward compat |
+| `harness run "<task>" [--ticket ID]` | Build RAG pack for a task and launch the selected agent with context pre-loaded |
 | `harness index` | Build / rebuild the local BM25 + semantic RAG index |
-| `harness eject` | Remove harness config from the project, keep `production_artifacts/` data |
+| `harness mcp status` | Show MCP registration state across all agent configs |
+| `harness mcp register` | Register harness MCP server in all installed agent configs |
+| `harness mcp unregister` | Remove harness from all agent config files |
+| `harness eject` | Remove harness config from the project, keep `.harness/` data |
 
 ---
 
@@ -119,13 +123,28 @@ The workflow is saved to `.harness/workflow.json` and rendered as the **Ticket W
   project.json        detected language, framework, entry points
   index.json          BM25 search index
   memory.jsonl        seeded architecture memories
-  mcp.json            MCP server config pointing at this project
+  mcp.json            internal MCP config (reference only — not read by agents)
   workflow.json       ticket workflow (ticket system, branch pattern, build cmd, rules)
   agent_research.json raw agent-generated sections
+  context_packs/      task-keyed RAG packs (one per ticket, 24h TTL)
 
 HARNESS.md            agent-readable guidelines + project profile
 HARNESS.html          full visual doc: architecture, modules, conventions, workflow, open questions
+CLAUDE.md             mandatory harness first-call rule (written/updated by init)
+AGENTS.md             mandatory harness first-call rule (written/updated by init)
+GEMINI.md             mandatory harness first-call rule (written/updated by init)
+.mcp.json             Claude Code MCP registration — points at harness server for this project
 ```
+
+Agent config files outside the project are also updated during init:
+
+```
+~/.gemini/antigravity-ide/mcp_config.json   Antigravity IDE — harness server entry added
+~/.gemini/antigravity/mcp_config.json       Antigravity CLI — harness server entry added
+~/.gemini/config/mcp_config.json            Gemini CLI — harness server entry added
+```
+
+After init, restart your agent IDE to load the new MCP registration.
 
 ---
 
@@ -133,27 +152,37 @@ HARNESS.html          full visual doc: architecture, modules, conventions, workf
 
 Every session after init, agents start from `HARNESS.html` instead of exploring the repo cold.
 
-### Starting a session
+### How agents receive the harness rule
 
-Open `HARNESS.html` in your browser before starting any ticket. The doc contains everything an agent needs: architecture, which files to edit, how to branch, what to build, and critical rules.
-
-Add this line to your `AGENTS.md` or `CLAUDE.md`:
+During `harness init`, a mandatory block is written into `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` at the project root. Every agent reads its own file at session start, so the rule is in context before the user types anything:
 
 ```
-Read HARNESS.html before starting any work on this project.
+## Harness — Mandatory First Step
+
+For every task, bug, or ticket you receive in this project:
+1. First tool call must be harness_ticket_context (MCP): root=<path>, task=<message>
+2. If MCP unavailable: harness rag-pack "<task>" then read last-rag-pack.md
+3. Never call list_dir, read_file, grep_search, find before step 1
 ```
 
-If it is not there, `harness init` writes it into `HARNESS.md` automatically.
+This means the work loop starts correctly whether you open a ticket in a task manager, paste a bug report directly into the agent chat, or run `harness run`. No wrapper command required.
 
 ### Building context for a task
 
-Instead of passing raw file dumps to an agent, build a compact context pack:
+Instead of passing raw file dumps to an agent, build a task-keyed context pack:
 
 ```bash
 harness rag-pack "fix login token handling"
-# writes .harness/context_packs/last-rag-pack.md
-# prints copy-ready commands for claude, codex, and local ollama
+# writes .harness/context_packs/fix-login-token-handling-<hash>.md
+# symlinks last-rag-pack.md → new file for backward compat
+# old packs expire after 24h automatically
+
+harness rag-pack "fix login token handling" --ticket WT-102
+# writes .harness/context_packs/WT-102.md
+# deterministic path — safe for parallel agents on the same task
 ```
+
+**Multi-agent RAG:** When Claude Code and Antigravity are working the same ticket in parallel, each gets its own context pack file keyed by ticket ID. No race condition — both agents read `WT-102.md`, not a shared singleton. A fresh `harness rag-pack --ticket WT-102` overwrites that file atomically when context needs refreshing.
 
 For more targeted retrieval:
 
@@ -164,6 +193,16 @@ harness-hybrid-context . "auth token refresh" 5
 # Contextual snippets annotated with path, symbol, and local relevance
 harness-contextual . "auth token refresh" 5
 ```
+
+### Launching an agent with context pre-loaded
+
+```bash
+harness run "fix broken auth on mobile" --ticket WT-102
+# builds RAG pack → loads workflow rules → launches selected agent
+# agent receives full context before reading a single source file
+```
+
+This is the same work loop as pasting a ticket directly — `harness run` just automates the RAG build step.
 
 ### Routing a task to the right center
 
@@ -226,10 +265,16 @@ harness-health        # aggregate: tests, MCP, retrieval quality, research fresh
 ### MCP server
 
 ```bash
-python3 -m harness_mcp.server   # used by Claude Code and Codex directly
+harness mcp status      # show registration state: Claude .mcp.json, Antigravity IDE/CLI, Gemini CLI
+harness mcp register    # write harness entry into all installed agent config files
+harness mcp unregister  # remove harness from all agent config files
+
+python3 -m harness_mcp.server   # test server directly (stdio MCP protocol)
 harness-mcp-check               # protocol-level conformance after any MCP change
 harness-mcp-security            # audit for unsafe shell execution patterns
 ```
+
+Each agent reads its own global config at IDE startup — not `.harness/mcp.json`. `harness init` calls `harness mcp register` automatically. If an agent still shows MCP errors after init, run `harness mcp status` to see which config file is missing the entry, then restart the agent IDE.
 
 ### Context pack audit
 
@@ -274,13 +319,16 @@ You run `harness init` once. Claude writes its own onboarding doc. Every future 
 ### The work loop in practice
 
 ```
-Ticket assigned
-  → read HARNESS.html (architecture + ticket workflow already there)
-  → harness rag-pack "fix the thing"   (3 relevant chunks, not 30 files)
-  → agent implements, builds, hands off
+Ticket assigned  (or bug pasted directly into agent chat)
+  → agent reads GEMINI.md / CLAUDE.md → sees mandatory harness rule
+  → agent calls harness_ticket_context(root=<project>, task=<message>)
+      returns: RAG chunks + workflow steps + routing in one call
+  → agent implements using only the files the pack points to
   → .harness/memory.jsonl updated
 
 Next ticket starts from memory, not from scratch.
 ```
+
+**Parallel agents:** Two agents working the same ticket each call `harness_ticket_context` with the same `root` and `task`. Each reads the same ticket-keyed RAG pack (`WT-102.md`) without stepping on each other.
 
 The doc improves over time. Each `harness grill` session adds more project-specific context. Each handoff adds to memory. The longer you use it on a project, the cheaper each session gets.
