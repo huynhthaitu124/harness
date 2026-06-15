@@ -1468,79 +1468,18 @@ def _pick_center(target: Path) -> None:
     run_center(target, action="set", value=chosen)
 
 
-def _print_command_list() -> None:
-    """Print the full flat command reference table."""
+def launch_menu(target: Path) -> None:
+    """Print all commands with descriptions and exit — no interactive TUI."""
     col = max(len(cmd) for cmd, _ in _ALL_COMMANDS) + 2
+    info = _project_info(target)
+
     print()
-    print(f"  {B}Available commands{R}")
+    print(f"  {B}Harness {_VERSION}{R}   {DIM}{info}{R}")
     print()
     for cmd, desc in _ALL_COMMANDS:
-        print(f"  {C}{cmd:<{col}}{R}{DIM}{desc}{R}")
+        print(f"  {C}{cmd:<{col}}{R}{desc}")
     print()
-    print(f"  {DIM}Run any command directly:  harness <command> [--path PATH]{R}")
-    print(f"  {DIM}Interactive menu below  —  ↑↓ navigate  •  enter select  •  esc quit{R}")
-    print()
-
-
-def launch_menu(target: Path) -> None:
-    from harness_core.tui import MenuItem, menu, confirm
-
-    _print_command_list()
-
-    items = [MenuItem(key=k, label=lbl, desc=desc) for k, lbl, desc in _MENU_ITEMS]
-
-    info  = _project_info(target)
-    title = f"Harness {_VERSION}   \x1b[2m{info}\x1b[0m"
-
-    while True:
-        chosen = menu(title, items, version="")
-        if chosen is None:
-            break
-
-        print(f"\n\x1b[1;36m── harness {chosen} ──\x1b[0m\n")
-
-        try:
-            if chosen == "init":
-                run_init(target)
-            elif chosen == "update":
-                run_update(target)
-            elif chosen == "mcp register":
-                run_mcp(target, "register")
-            elif chosen == "mcp status":
-                run_mcp(target, "status")
-            elif chosen == "center":
-                _pick_center(target)
-            elif chosen == "eject":
-                ok = confirm(
-                    "Remove .harness/, HARNESS.md, HARNESS.html, configs/claude-mcp.json?",
-                    default=False,
-                )
-                if ok:
-                    run_eject(target)
-                else:
-                    print("  cancelled")
-            elif chosen == "analyze":
-                run_analyze(target)
-            elif chosen == "grill":
-                run_grill(target)
-            elif chosen == "index":
-                run_index(target)
-            elif chosen == "rag-pack":
-                query = input("  Task/query for RAG pack: ").strip()
-                if query:
-                    run_rag_pack(target, query=query)
-            elif chosen == "status":
-                run_status(target)
-        except KeyboardInterrupt:
-            print("\n  interrupted")
-
-        print()
-        input("\x1b[2m  press Enter to return to menu…\x1b[0m")
-        print()
-
-        # refresh info line after command may have changed state
-        info  = _project_info(target)
-        title = f"Harness {_VERSION}   \x1b[2m{info}\x1b[0m"
+    print(f"  {DIM}harness <command> [--path PATH]{R}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
