@@ -435,17 +435,48 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
 
     # ── show created artifacts (check disk, not just the reported list) ────────
     artifacts = [
-        (target / ".harness",                    ".harness/",              "config + BM25 index + data"),
-        (target / ".harness" / "memory.jsonl",   ".harness/memory.jsonl",  "seeded memory"),
-        (target / ".harness" / "mcp.json",       ".harness/mcp.json",      "MCP server config"),
-        (target / "HARNESS.md",                  "HARNESS.md",             "project guidelines"),
-        (target / "HARNESS.html",                "HARNESS.html",           "visual architecture doc"),
+        (target / ".harness",                         ".harness/",              "config + BM25 index + data"),
+        (target / ".harness" / "memory.jsonl",        ".harness/memory.jsonl",  "seeded memory"),
+        (target / ".harness" / "mcp_schema.md",       ".harness/mcp_schema.md", "MCP tool reference (all agents)"),
+        (target / "HARNESS.md",                       "HARNESS.md",             "project guidelines"),
+        (target / "HARNESS.html",                     "HARNESS.html",           "visual architecture doc"),
     ]
     for path, label, desc in artifacts:
         if path.exists():
             _ok(f"{B}{label}{R}  {DIM}{desc}{R}")
         else:
             _warn(f"not created: {label}")
+
+    # ── MCP registration summary ──────────────────────────────────────────────
+    print()
+    _agent_files = ["CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+    injected = [f for f in _agent_files
+                if (target / f).exists()
+                and "harness:start" in (target / f).read_text(encoding="utf-8", errors="ignore")]
+    if injected:
+        _ok(f"agent rules injected  {DIM}{', '.join(injected)}{R}")
+
+    _mcp_configs = {
+        "Claude Code":       target / ".mcp.json",
+        "Antigravity IDE":   Path.home() / ".gemini" / "antigravity-ide" / "mcp_config.json",
+        "Antigravity CLI":   Path.home() / ".gemini" / "antigravity" / "mcp_config.json",
+        "Gemini CLI":        Path.home() / ".gemini" / "config" / "mcp_config.json",
+    }
+    registered = []
+    for label, cfg in _mcp_configs.items():
+        if cfg.exists():
+            try:
+                d = json.loads(cfg.read_text(encoding="utf-8"))
+                if "harness" in d.get("mcpServers", {}):
+                    registered.append(label)
+            except Exception:
+                pass
+    if registered:
+        _ok(f"MCP registered  {DIM}{', '.join(registered)}{R}")
+    else:
+        _warn("MCP not registered — run:  harness mcp register")
+
+    _info(f"{DIM}Restart agent IDE to load the new MCP server.{R}")
 
     # ── symlink (after artifacts, silent if already installed) ─────────────────
     _install_symlink(result)
