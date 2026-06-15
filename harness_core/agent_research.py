@@ -151,13 +151,14 @@ def detect_agent_clis() -> list[dict[str, Any]]:
 
     # ── Antigravity CLI ───────────────────────────────────────────────────────
     # Install: curl -fsSL https://antigravity.google/cli/install.sh | bash  (macOS/Linux)
-    ag_path  = shutil.which("antigravity")
+    # Binary is 'agy' (the Antigravity CLI installs as 'agy', not 'antigravity')
+    ag_path  = shutil.which("agy")
     ag_inst  = bool(ag_path)
     ag_auth  = False
     if ag_inst:
         try:
             _r = subprocess.run(
-                ["antigravity", "auth", "status"],
+                ["agy", "auth", "status"],
                 capture_output=True, text=True, timeout=8,
             )
             ag_auth = _r.returncode == 0 or "logged" in (_r.stdout + _r.stderr).lower()
@@ -167,7 +168,7 @@ def detect_agent_clis() -> list[dict[str, Any]]:
     if ag_inst:
         try:
             _vr = subprocess.run(
-                ["antigravity", "--version"], capture_output=True, text=True, timeout=5,
+                ["agy", "--version"], capture_output=True, text=True, timeout=5,
             )
             ag_version = (_vr.stdout + _vr.stderr).strip().split("\n")[0][:40]
         except Exception:
@@ -186,12 +187,12 @@ def detect_agent_clis() -> list[dict[str, Any]]:
     _ag_install_steps = (
         [
             "curl -fsSL https://antigravity.google/cli/install.sh | bash",
-            "antigravity auth login  # browser redirect — sign in with Google",
-            "antigravity --version  # verify",
+            "agy auth login  # browser redirect — sign in with Google",
+            "agy --version  # verify",
         ] if not _is_win else [
             "irm https://antigravity.google/cli/install.ps1 | iex  # run in PowerShell",
-            "antigravity auth login  # browser redirect — sign in with Google",
-            "antigravity --version  # verify",
+            "agy auth login  # browser redirect — sign in with Google",
+            "agy --version  # verify",
         ]
     )
     agents.append({
@@ -207,7 +208,7 @@ def detect_agent_clis() -> list[dict[str, Any]]:
         "install_cmd":         _ag_install_cmd,
         "install_cmd_display": _ag_install_display,
         "install_pkg":         None,
-        "auth_cmd":            ["antigravity", "auth", "login"],
+        "auth_cmd":            ["agy", "auth", "login"],
         "auth_url":            "https://antigravity.google/download#antigravity-cli",
         "auth_note":           "Sign in with your Google account.\n"
                                "Your browser will open for OAuth — log in and the token is stored automatically.",
@@ -297,7 +298,9 @@ def install_agent_cli(agent: dict[str, Any]) -> bool:
         # Can't install automatically — open browser
         url = agent.get("auth_url") or "https://ollama.com/download"
         try:
-            subprocess.run(["open", url], check=False)
+            import sys as _sys_ia
+            _open = ["start", url] if _sys_ia.platform == "win32" else ["open", url]
+            subprocess.run(_open, check=False)
         except Exception:
             pass
         return False
@@ -666,7 +669,7 @@ def _invoke_antigravity(root: Path, prompt: str) -> str | None:
     _sys.stdout.write("  ┌─ antigravity output ────────────────────────────────────\n")
     _sys.stdout.flush()
 
-    result = _stream_subprocess(["antigravity", "ask", prompt], prompt, root, timeout=300)
+    result = _stream_subprocess(["agy", "ask", prompt], prompt, root, timeout=300)
 
     _sys.stdout.write("  └────────────────────────────────────────────────────────\n")
     _sys.stdout.flush()
