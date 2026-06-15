@@ -171,9 +171,13 @@ def init_project_full(
         from harness_core.agent_research import save_research
         save_research(target_root, agent_sections)
 
+    # ── load workflow if it exists ────────────────────────────────────────────
+    from harness_core.workflow_steps import load_workflow
+    workflow = load_workflow(target_root)
+
     _write(target_root / "HARNESS.html",
            render_harness_html(analysis, project_name, harness_root / "scripts",
-                               agent_sections=agent_sections))
+                               agent_sections=agent_sections, workflow=workflow))
 
     return {
         "root":        str(target_root),

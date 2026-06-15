@@ -685,6 +685,8 @@ def run_grill_session(
     framework: str,
     project_name: str,
 ) -> dict[str, str]:
+    from harness_core.workflow_steps import WORKFLOW_GRILL_QUESTIONS
+
     questions = generate_grill_questions(language, framework)
     answers: dict[str, str] = {}
     print(f"\n=== Harness Grill Session — {project_name} ({language}/{framework or 'unknown'}) ===")
@@ -694,23 +696,55 @@ def run_grill_session(
             answer = input(f"{item['q']}\n> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nGrill session interrupted.")
+            return answers
+        if answer:
+            answers[item["key"]] = answer
+
+    # ── Ticket workflow setup ─────────────────────────────────────────────────
+    print("\n--- Ticket Workflow ---")
+    print("These answers teach agents your project's work loop for every ticket.\n")
+    for item in WORKFLOW_GRILL_QUESTIONS:
+        try:
+            answer = input(f"{item['q']}\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGrill session interrupted.")
             break
         if answer:
             answers[item["key"]] = answer
+
     return answers
 
 
 def write_grill_answers_to_harness_md(harness_md_path: Path, answers: dict[str, str]) -> None:
+    from harness_core.workflow_steps import answers_to_workflow, save_workflow, render_workflow_md
+
     if not harness_md_path.exists() or not answers:
         return
+
+    # ── Save workflow.json if workflow answers were provided ──────────────────
+    wf_keys = {k for k in answers if k.startswith("wf_")}
+    project_root = harness_md_path.parent
+    if wf_keys:
+        wf = answers_to_workflow(answers)
+        save_workflow(project_root, wf)
+
+    # ── Write non-workflow answers into HARNESS.md ────────────────────────────
+    plain = {k: v for k, v in answers.items() if not k.startswith("wf_")}
     lines: list[str] = []
-    for key, value in answers.items():
+    for key, value in plain.items():
         label = key.replace("_", " ").title()
         lines.append(f"- **{label}**: {value}")
-    customize_block = "\n".join(lines)
+
     content = harness_md_path.read_text(encoding="utf-8")
     old_marker = "<!-- populated by harness-grill-project -->"
-    new_block = f"{customize_block}\n\n<!-- populated by harness-grill-project -->"
+
+    # Append workflow section after the bullet list
+    workflow_block = ""
+    if wf_keys:
+        wf_md = render_workflow_md(answers_to_workflow(answers))
+        workflow_block = f"\n\n{wf_md}"
+
+    new_block = "\n".join(lines) + workflow_block + f"\n\n{old_marker}"
     updated = content.replace(old_marker, new_block)
     harness_md_path.write_text(updated, encoding="utf-8")
 
@@ -721,6 +755,7 @@ def render_harness_html(  # noqa: C901
     harness_scripts_path: Path,
     *,
     agent_sections: "dict[str, Any] | None" = None,
+    workflow: "dict[str, Any] | None" = None,
 ) -> str:
     language   = analysis.get("language", "unknown")
     framework  = analysis.get("framework", "") or ""
@@ -849,18 +884,80 @@ def render_harness_html(  # noqa: C901
 
     mcp_decisions_html = "\n".join(_mcp_decision(s, n, c, d) for s, n, c, d in mcp_tools)
 
+    # ── workflow section HTML ─────────────────────────────────────────────────
+    workflow_section_html = ""
+    if workflow:
+        wf_steps   = workflow.get("steps", [])
+        wf_rules   = workflow.get("critical_rules", [])
+        wf_system  = _e(workflow.get("ticket_system", ""))
+        wf_url     = _e(workflow.get("ticket_url", ""))
+        wf_branch  = _e(workflow.get("branch_pattern", ""))
+        wf_base    = _e(workflow.get("base_branch", "main"))
+        wf_build   = _e(workflow.get("build_cmd", ""))
+        wf_files   = workflow.get("context_files", [])
+
+        facts_rows = ""
+        if wf_system:
+            facts_rows += _fact("Ticket system", f"<strong>{wf_system}</strong>" + (f"  <small><a href='{wf_url}' target='_blank'>{wf_url}</a></small>" if wf_url else ""))
+        if wf_branch:
+            facts_rows += _fact("Branch pattern", f"<code>{wf_branch}</code> from <code>{wf_base}</code>")
+        if wf_build:
+            facts_rows += _fact("Verify cmd", f"<code>{wf_build}</code>")
+        if wf_files:
+            facts_rows += _fact("Load first", " ".join(f"<code>{_e(f)}</code>" for f in wf_files[:6]))
+
+        step_rows = ""
+        for s in wf_steps:
+            sid    = _e(s.get("id", ""))
+            stitle = _e(s.get("title", ""))
+            sdet   = _e(s.get("detail", ""))
+            step_rows += (
+                f'<div class="rule">'
+                f'<span class="rule-id"><span class="group-code">{sid}</span></span>'
+                f'<span><strong>{stitle}</strong><br><small style="color:var(--muted)">{sdet}</small></span>'
+                f'<small></small>'
+                f'</div>'
+            )
+
+        rule_rows = ""
+        for i, r in enumerate(wf_rules, 1):
+            rule_rows += (
+                f'<div class="rule">'
+                f'<span class="rule-id"><span class="group-code">RULE-{i:02d}</span></span>'
+                f'<span>{_e(r)}</span>'
+                f'<small style="color:var(--red);font-weight:700">always</small>'
+                f'</div>'
+            )
+
+        workflow_section_html = f"""
+<!-- ── 08 Ticket Workflow ── -->
+<section id="workflow">
+  <div class="section-head">
+    <span class="kicker">Work loop</span>
+    <h2>Ticket workflow</h2>
+    <p style="color:var(--muted);font-size:.95rem">Follow these steps for every ticket, bug, or feature request on this project.</p>
+  </div>
+  {'<div class="board">' + facts_rows + '</div>' if facts_rows else ''}
+  {'<div class="rule-group" style="margin-top:24px"><div class="rule-group-head"><h3>Steps</h3></div>' + step_rows + '</div>' if step_rows else ''}
+  {'<div class="rule-group" style="margin-top:24px"><div class="rule-group-head"><h3>Critical rules</h3></div>' + rule_rows + '</div>' if rule_rows else ''}
+</section>"""
+
     # ── dynamic nav items ────────────────────────────────────────────────────
     _base_nav = [
-        ("overview", "Overview", "00"),
-        ("profile",  "Profile",  "01"),
-        ("routing",  "Routing",  "02"),
-        ("agents",   "Agents",   "03"),
-        ("features", "Features", "04"),
-        ("context",  "Context",  "05"),
-        ("commands", "Commands", "06"),
-        ("layout",   "Layout",   "07"),
+        ("overview",  "Overview",  "00"),
+        ("profile",   "Profile",   "01"),
+        ("routing",   "Routing",   "02"),
+        ("agents",    "Agents",    "03"),
+        ("features",  "Features",  "04"),
+        ("context",   "Context",   "05"),
+        ("commands",  "Commands",  "06"),
+        ("layout",    "Layout",    "07"),
     ]
+    if workflow:
+        _base_nav.append(("workflow", "Workflow", "08"))
+
     _extra_nav: list[tuple[str, str, str]] = []
+    _agent_start = 9 if workflow else 8
     if agent_sections:
         for _i, _sec in enumerate(agent_sections.get("sections", []), start=8):
             _extra_nav.append((
@@ -1392,6 +1489,7 @@ harness status</pre>
   </div>
 </section>
 
+{workflow_section_html}
 {agent_sections_html}
 
 <div style="border-top:1px solid var(--line);padding-top:16px;color:var(--muted);font-size:.8rem;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
