@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from harness_core.feature_state import init_feature_list
+from harness_core.lifecycle import default_hooks, save_hooks
+from harness_core.project_growth import bootstrap_growth
 from harness_core.project_analyzer import (
     build_analysis_context,
     detect_agents,
@@ -83,6 +85,7 @@ def init_project_full(
     *,
     dry_run: bool = False,
     skip_index: bool = False,
+    agent_sections: "dict[str, Any] | None" = None,
 ) -> dict[str, Any]:
     created: list[str] = []
 
@@ -96,75 +99,86 @@ def init_project_full(
         if not dry_run:
             path.mkdir(parents=True, exist_ok=True)
 
-    # Phase 3: Configure — .harness/state.json + project.json
+    # All harness data lives under .harness/ — nothing scattered at project root
+    hd = target_root / ".harness"
+
+    # ── core config ────────────────────────────────────────────────────────────
     state = default_state()
     state["routing_policy"].update(analysis.get("routing_keywords", {}))
-    state_path = target_root / ".harness" / "state.json"
+    state_path = hd / "state.json"
     if not dry_run:
         save_state(state_path, state)
     created.append(str(state_path))
 
     import datetime as _dt
     project_meta = {
-        "project_name":       analysis.get("project_name", target_root.name),
-        "language":           analysis.get("language", "unknown"),
-        "framework":          analysis.get("framework", ""),
+        "project_name":        analysis.get("project_name", target_root.name),
+        "language":            analysis.get("language", "unknown"),
+        "framework":           analysis.get("framework", ""),
         "secondary_languages": analysis.get("secondary_languages", []),
-        "config_file":        analysis.get("config_file", ""),
-        "entry_points":       analysis.get("entry_points", []),
-        "agents":             analysis.get("agents", []),
-        "harness_root":       str(harness_root),
-        "analyzed_at":        _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "config_file":         analysis.get("config_file", ""),
+        "entry_points":        analysis.get("entry_points", []),
+        "agents":              analysis.get("agents", []),
+        "harness_root":        str(harness_root),
+        "analyzed_at":         _dt.datetime.now(_dt.timezone.utc).isoformat(),
     }
-    project_json_path = target_root / ".harness" / "project.json"
-    _write(project_json_path, json.dumps(project_meta, indent=2, ensure_ascii=False) + "\n")
+    _write(hd / "project.json", json.dumps(project_meta, indent=2, ensure_ascii=False) + "\n")
 
-    # Phase 2: Index
-    index_path = target_root / ".harness" / "index.json"
+    # ── BM25 index ────────────────────────────────────────────────────────────
+    index_path = hd / "index.json"
     if not skip_index and not dry_run:
         build_index(target_root, index_path)
     created.append(str(index_path))
 
-    # Phase 4: Seed memory
-    memory_path = target_root / "production_artifacts" / "memory.jsonl"
+    # ── memory ────────────────────────────────────────────────────────────────
+    memory_path = hd / "memory.jsonl"
     if not dry_run:
-        memory_path.parent.mkdir(parents=True, exist_ok=True)
         seed_memories(memory_path, analysis.get("initial_memories", []))
     created.append(str(memory_path))
 
-    # Phase 6: Init artifacts
+    # ── artifact subdirs ──────────────────────────────────────────────────────
     for subdir in ("handoffs", "context_packs", "evaluations"):
-        d = target_root / "production_artifacts" / subdir
-        _mkdir(d)
-        created.append(str(d))
+        _mkdir(hd / subdir)
+        created.append(str(hd / subdir))
 
-    handoff_readme = target_root / "production_artifacts" / "handoffs" / "README.md"
-    _write(handoff_readme, "# Handoffs\n\nWrite compact center-to-center handoffs here.\n")
+    _write(hd / "handoffs" / "README.md",
+           "# Handoffs\n\nWrite compact center-to-center handoffs here.\n")
 
-    feature_path = target_root / "production_artifacts" / "feature_list.json"
+    feature_path = hd / "feature_list.json"
     if not dry_run:
-        feature_path.parent.mkdir(parents=True, exist_ok=True)
         init_feature_list(feature_path, analysis.get("initial_features", []))
     created.append(str(feature_path))
 
-    # Phase 5: Document — HARNESS.md + HARNESS.html + configs/claude-mcp.json
-    project_name = analysis.get("project_name", target_root.name)
-    harness_md = render_harness_md(analysis, harness_root / "scripts", project_name)
-    _write(target_root / "HARNESS.md", harness_md)
-
-    harness_html = render_harness_html(analysis, project_name, harness_root / "scripts")
-    _write(target_root / "HARNESS.html", harness_html)
-
+    # ── MCP config ────────────────────────────────────────────────────────────
     mcp_config = generate_mcp_config(harness_root, target_root)
-    _write(
-        target_root / "configs" / "claude-mcp.json",
-        json.dumps(mcp_config, indent=2, ensure_ascii=False) + "\n",
-    )
+    _write(hd / "mcp.json", json.dumps(mcp_config, indent=2, ensure_ascii=False) + "\n")
+
+    # ── lifecycle hooks ───────────────────────────────────────────────────────
+    if not dry_run:
+        save_hooks(target_root, default_hooks())
+
+    # ── per-project self-growth bootstrap ─────────────────────────────────────
+    if not dry_run:
+        bootstrap_growth(target_root, analysis.get("initial_features", []))
+
+    # ── docs at project root (agents + browser need these at root) ────────────
+    project_name = analysis.get("project_name", target_root.name)
+    _write(target_root / "HARNESS.md",
+           render_harness_md(analysis, harness_root / "scripts", project_name))
+
+    # ── save agent research if provided ──────────────────────────────────────
+    if agent_sections and not dry_run:
+        from harness_core.agent_research import save_research
+        save_research(target_root, agent_sections)
+
+    _write(target_root / "HARNESS.html",
+           render_harness_html(analysis, project_name, harness_root / "scripts",
+                               agent_sections=agent_sections))
 
     return {
-        "root": str(target_root),
-        "harness_root": str(harness_root),
-        "dry_run": dry_run,
-        "analysis": {k: v for k, v in analysis.items() if k != "initial_memories"},
-        "created": created,
+        "root":        str(target_root),
+        "harness_dir": str(hd),
+        "dry_run":     dry_run,
+        "analysis":    {k: v for k, v in analysis.items() if k != "initial_memories"},
+        "created":     created,
     }

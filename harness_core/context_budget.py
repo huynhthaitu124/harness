@@ -25,13 +25,13 @@ TEXT_EXTENSIONS = {
 SKIP_DIRS = {
     ".git",
     ".harness",
+    "production_artifacts",
     "__pycache__",
     "node_modules",
     "dist",
     "build",
     ".venv",
     "venv",
-    "production_artifacts",
     # compiled / generated output — always exclude
     ".next",
     ".nuxt",

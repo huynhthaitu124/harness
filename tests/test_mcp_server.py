@@ -1067,6 +1067,28 @@ class McpServerTests(unittest.TestCase):
         self.assertIn('"must_use_before_codex": true', text)
         self.assertIn('"codex_payload_tokens_estimate"', text)
 
+    def test_agent_rag_pack_tool_writes_shared_pack(self):
+        root = Path(self.tmp.name) / "agent-rag"
+        root.mkdir()
+        (root / ".harness").mkdir()
+        (root / "auth.py").write_text("def login():\n    return 'token'\n" * 40, encoding="utf-8")
+        response = dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 63,
+                "method": "tools/call",
+                "params": {
+                    "name": "harness_agent_rag_pack",
+                    "arguments": {"root": str(root), "task": "fix login token", "center": "project"},
+                },
+            }
+        )
+
+        text = response["result"]["content"][0]["text"]
+        self.assertIn('"context_pack_path"', text)
+        self.assertIn('"commands"', text)
+        self.assertTrue((root / ".harness" / "context_packs" / "last-rag-pack.md").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

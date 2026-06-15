@@ -5,6 +5,25 @@ Shared tools exposed by MCP:
 - `harness_get_status`
 - `harness_set_center`
 - `harness_route_task`
+- `harness_suggest_model_tier`
+- `harness_begin_trajectory`
+- `harness_record_step`
+- `harness_end_trajectory`
+- `harness_list_trajectories`
+- `harness_fire_event`
+- `harness_register_hook`
+- `harness_list_hooks`
+- `harness_project_growth_status`
+- `harness_next_project_action`
+- `harness_record_routing_evidence`
+- `harness_search_patterns`
+- `harness_new_chain`
+- `harness_begin_span`
+- `harness_end_span`
+- `harness_chain_summary`
+- `harness_recent_telemetry`
+- `harness_check_trajectory_hacks`
+- `harness_scan_hacks`
 - `harness_record_handoff`
 - `harness_delegate_claude`
 - `harness_delegate_antigravity`
@@ -23,6 +42,7 @@ Shared tools exposed by MCP:
 - `harness_search_index`
 - `harness_indexed_context_pack`
 - `harness_contextual_context_pack`
+- `harness_local_context_pack`
 - `harness_local_model_gate`
 - `harness_plan_local_worker`
 - `harness_plan_structured_local_worker`
@@ -62,6 +82,7 @@ Shared tools exposed by MCP:
 - `harness_mcp_security_audit`
 - `harness_context_pack_audit`
 - `harness_codex_preflight`
+- `harness_agent_rag_pack`
 - `harness_aggregate_health`
 - `harness_init_experiment_queue`
 - `harness_plan_next_experiment`
@@ -71,3 +92,4 @@ Shared tools exposed by MCP:
 
 Codex and Claude use the MCP server directly.
 Antigravity uses the imported `tri-center-harness` skill and can call scripts directly.
+When MCP is stale or unavailable, run `harness rag-pack "<task>"` from the target project so Codex, Claude, Antigravity, and local Ollama consume the same `.harness/context_packs/last-rag-pack.md`.

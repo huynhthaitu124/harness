@@ -80,11 +80,18 @@ Memories are deduplicated by content hash and ranked by query relevance, importa
 ## Switch Center
 
 ```bash
+./scripts/harness center get
+./scripts/harness center set codex
+./scripts/harness center set claude
+./scripts/harness center set antigravity
+./scripts/harness center set auto
 ./scripts/harness-center set auto
 ./scripts/harness-center set codex
 ./scripts/harness-center set claude
 ./scripts/harness-center set antigravity
 ```
+
+The `harness center ...` form is per project and writes `.harness/state.json`. Use it when one repo should default to a different center without changing other projects.
 
 Check live readiness before a long delegation:
 
@@ -101,6 +108,21 @@ The report combines CLI/MCP/plugin probes, quota reset hints, transient worker f
 ```
 
 Run this before Codex receives repo-heavy context. It builds a Memory/RAG payload, optionally distills it through local Qwen using Ollama `/api/chat` with `think:false`, writes `production_artifacts/context_packs/codex-preflight-context.md`, and reports estimated raw-vs-Codex token reduction. Claude worker runs should use Sonnet with tools available; Antigravity is quality/success checked rather than token-metered.
+
+## Shared Agent RAG Pack
+
+```bash
+./scripts/harness rag-pack "fix login token handling" --center project
+```
+
+This writes `.harness/context_packs/last-rag-pack.md` and includes copy-ready commands for:
+
+- `codex exec`
+- `claude -p ... --model sonnet`
+- `agy --print`
+- local Ollama `/api/chat` with `think:false`
+
+Use this when you want every center to consume the same Memory + Hybrid RAG evidence instead of rescanning the repository independently.
 
 ## Route A Task
 

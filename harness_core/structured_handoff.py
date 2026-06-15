@@ -19,7 +19,7 @@ def write_structured_handoff(
     open_items: list[str] | None = None,
 ) -> dict[str, Any]:
     slug = "".join(character if character.isalnum() else "-" for character in title.lower()).strip("-")[:80]
-    handoff_dir = root / "production_artifacts" / "handoffs"
+    handoff_dir = root / ".harness" / "handoffs"
     handoff_dir.mkdir(parents=True, exist_ok=True)
     markdown_path = handoff_dir / f"{slug or 'handoff'}.md"
     manifest_path = handoff_dir / f"{slug or 'handoff'}.json"

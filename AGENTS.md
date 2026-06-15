@@ -29,7 +29,7 @@ For long-running work, initialize or use `feature_list.json`. Features are defau
 
 ## Core Workflow Commands
 
-- `scripts/harness`: unified project CLI — run from inside a project directory. Subcommands: `init`, `eject`, `analyze`, `grill`, `status`. Accepts an optional path argument to target a different directory.
+- `scripts/harness`: unified project CLI — run from inside a project directory. Subcommands: `init`, `eject`, `analyze`, `grill`, `status`, `center`, `rag-pack`. Accepts an optional path argument to target a different directory.
 - `scripts/harness-init`: low-level init entry point (used internally by `harness init`).
 - `scripts/harness-analyze-project`: low-level analyze entry point (used internally by `harness analyze`).
 - `scripts/harness-grill-project`: low-level grill entry point (used internally by `harness grill`).
@@ -37,6 +37,7 @@ For long-running work, initialize or use `feature_list.json`. Features are defau
 - `scripts/harness-route`: select the center and workflow.
 - `scripts/harness-readiness`: verify live CLI, quota, failure, and local-worker state before delegation.
 - `scripts/harness-hybrid-context`: build the default compact code context pack.
+- `harness rag-pack "<task>"`: write `.harness/context_packs/last-rag-pack.md` with one shared RAG payload plus Codex, Claude Sonnet, Antigravity, and local Ollama commands.
 - `scripts/harness-compact-output`: shrink noisy logs/tool output before cloud handoff.
 - `scripts/harness-experiment`: record paired baseline/harness token evidence.
 - `scripts/harness-handoff`: validate structured handoff manifests when changing centers.
@@ -59,6 +60,7 @@ For long-running work, initialize or use `feature_list.json`. Features are defau
 Default to the cheapest reliable path:
 
 - Use local/file/RAG summarization before cloud reasoning.
+- Before any cloud center scans repo context, prefer `harness rag-pack "<task>"` and pass that pack to Codex, Claude, Antigravity, or the local Ollama worker.
 - Before Codex executes repo-heavy work, run `scripts/harness-codex-preflight "<task>" --local` when Qwen is usable; send the compact payload, not raw repo context.
 - Keep tool outputs short and cite paths/line numbers instead of pasting whole files.
 - Use one center at a time unless there is a clear evaluation benefit.

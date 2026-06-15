@@ -7,6 +7,28 @@ from typing import Any
 CENTERS = ("codex", "claude", "antigravity")
 BUDGET_WEIGHTS = {"low": 1.0, "medium": 2.0, "high": 4.0}
 
+# Maps tier name → concrete model ID (update when new models release)
+_TIER_TO_MODEL: dict[str, str] = {
+    "opus":   "claude-opus-4-8",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku":  "claude-haiku-4-5-20251001",
+}
+
+_DEFAULT_MODEL_TIERS: dict[str, list[str]] = {
+    "opus_keywords": [
+        "architect", "security", "review", "design", "audit", "refactor large",
+        "thiết kế", "bảo mật", "kiến trúc", "phân tích hệ thống",
+    ],
+    "sonnet_keywords": [
+        "debug", "test", "refactor", "explain", "fix", "implement", "write",
+        "sửa", "viết", "lập trình", "tạo", "build",
+    ],
+    "haiku_keywords": [
+        "status", "format", "rename", "list", "summary", "check", "ping",
+        "xem", "liệt kê", "tóm tắt", "kiểm tra nhanh",
+    ],
+}
+
 
 def default_state() -> dict[str, Any]:
     return {
@@ -31,6 +53,40 @@ def default_state() -> dict[str, Any]:
             ],
             "coding_keywords": ["implement", "fix", "refactor", "code", "test", "sửa", "cài", "setup"],
         },
+        "model_tiers": _DEFAULT_MODEL_TIERS,
+        "local_model": {
+            "enabled": True,
+            "provider": "ollama",
+            "model": "qwen3.5:9b",
+            "endpoint": "http://localhost:11434/api/chat",
+            "think": False,
+            "role": "rag_distiller",
+        },
+    }
+
+
+def suggest_model_tier(task: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return suggested Claude model tier (opus/sonnet/haiku) for a task."""
+    tiers = (state or default_state()).get("model_tiers", _DEFAULT_MODEL_TIERS)
+    task_lower = task.lower()
+    for tier, keywords in [
+        ("opus",   tiers.get("opus_keywords", [])),
+        ("haiku",  tiers.get("haiku_keywords", [])),
+        ("sonnet", tiers.get("sonnet_keywords", [])),
+    ]:
+        match = next((kw for kw in keywords if kw in task_lower), None)
+        if match:
+            return {
+                "tier":             tier,
+                "model_id":         _TIER_TO_MODEL[tier],
+                "matched_keyword":  match,
+                "reason":           f"task matches {tier} keywords",
+            }
+    return {
+        "tier":            "sonnet",
+        "model_id":        _TIER_TO_MODEL["sonnet"],
+        "matched_keyword": None,
+        "reason":          "default — no keyword match",
     }
 
 
@@ -42,6 +98,8 @@ def load_state(path: Path) -> dict[str, Any]:
     state.update(loaded)
     state["quotas"].update(loaded.get("quotas", {}))
     state["routing_policy"].update(loaded.get("routing_policy", {}))
+    state["model_tiers"].update(loaded.get("model_tiers", {}))
+    state["local_model"].update(loaded.get("local_model", {}))
     return state
 
 

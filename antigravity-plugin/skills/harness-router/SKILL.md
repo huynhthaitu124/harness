@@ -42,9 +42,12 @@ Before delegation, check current center and local-worker health:
 For compact code retrieval and noisy tool output:
 
 ```bash
+/Users/danchoingoinhinmuaroi/Projects/Harness/scripts/harness rag-pack "<task>" <repo>
 /Users/danchoingoinhinmuaroi/Projects/Harness/scripts/harness-hybrid-context <repo> "<query>" 5
 /Users/danchoingoinhinmuaroi/Projects/Harness/scripts/harness-compact-output <log-file> 4000
 ```
+
+`harness rag-pack` writes `.harness/context_packs/last-rag-pack.md` and includes ready commands for Codex, Claude Sonnet, Antigravity, and local Ollama. Use that shared pack instead of rescanning the repository.
 
 For evidence-grade token savings and center changes:
 

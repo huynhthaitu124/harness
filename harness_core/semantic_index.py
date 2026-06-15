@@ -21,15 +21,30 @@ def build_semantic_index(
     model: str,
     chunk_lines: int = 40,
     overlap_lines: int = 8,
+    batch_size: int = 64,
+    progress_cb: "Callable[[int, int], None] | None" = None,
 ) -> dict[str, Any]:
     existing = _load_existing(index_path, model)
     cached = {(item["key"], item["content_hash"]): item["vector"] for item in existing.get("chunks", [])}
-    chunks = _chunk_repository(root, chunk_lines=chunk_lines, overlap_lines=overlap_lines)
-    missing = [chunk for chunk in chunks if (chunk["key"], chunk["content_hash"]) not in cached]
-    vectors = embedder([chunk["text"] for chunk in missing]) if missing else []
-    if len(vectors) != len(missing):
-        raise ValueError("embedder returned a different vector count than requested")
-    generated = {chunk["key"]: vector for chunk, vector in zip(missing, vectors)}
+    chunks   = _chunk_repository(root, chunk_lines=chunk_lines, overlap_lines=overlap_lines)
+    missing  = [chunk for chunk in chunks if (chunk["key"], chunk["content_hash"]) not in cached]
+
+    # Embed in batches — never send the whole corpus in one request
+    generated: dict[str, list[float]] = {}
+    total_missing = len(missing)
+    embedded_so_far = 0
+    for batch_start in range(0, total_missing, batch_size):
+        batch = missing[batch_start: batch_start + batch_size]
+        batch_vectors = embedder([c["text"] for c in batch])
+        if len(batch_vectors) != len(batch):
+            raise ValueError(
+                f"embedder returned {len(batch_vectors)} vectors for {len(batch)} texts in batch"
+            )
+        for chunk, vector in zip(batch, batch_vectors):
+            generated[chunk["key"]] = vector
+        embedded_so_far += len(batch)
+        if progress_cb:
+            progress_cb(embedded_so_far, total_missing)
 
     records = []
     reused_count = 0
@@ -46,11 +61,11 @@ def build_semantic_index(
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return {
-        "index_path": str(index_path),
-        "model": model,
-        "chunk_count": len(records),
+        "index_path":    str(index_path),
+        "model":         model,
+        "chunk_count":   len(records),
         "embedded_count": len(missing),
-        "reused_count": reused_count,
+        "reused_count":  reused_count,
     }
 
 
@@ -133,7 +148,8 @@ def detect_ollama(host: str = "http://localhost:11434") -> tuple[list[str], list
 
 
 def ollama_embed(texts: list[str], *, model: str, host: str = "http://localhost:11434",
-                 timeout: int = 300) -> list[list[float]]:
+                 timeout: int = 60) -> list[list[float]]:
+    """Embed a batch of texts. Keep batch_size ≤ 64 to stay within timeout."""
     payload = json.dumps({"model": model, "input": texts}).encode("utf-8")
     request = Request(f"{host.rstrip('/')}/api/embed", data=payload,
                       headers={"Content-Type": "application/json"})

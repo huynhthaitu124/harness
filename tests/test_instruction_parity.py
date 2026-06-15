@@ -29,6 +29,7 @@ class InstructionParityTests(unittest.TestCase):
             "harness-mcp-security",
             "harness-context-pack-audit",
             "harness-codex-preflight",
+            "harness rag-pack",
         ]
 
         for path in files:

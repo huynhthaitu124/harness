@@ -14,13 +14,12 @@ HARNESS_PATHS = [
     ".harness",
     "HARNESS.md",
     "HARNESS.html",
-    "configs/claude-mcp.json",
 ]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Remove harness config from a project while keeping production_artifacts data.",
+        description="Remove harness config from a project (.harness/, HARNESS.md, HARNESS.html).",
         usage="harness-eject <target-project-path> [--dry-run]",
     )
     parser.add_argument("target", help="Path to the target project directory")
@@ -50,21 +49,11 @@ def main() -> int:
                 path.unlink()
         removed.append(str(path))
 
-    configs_dir = target / "configs"
-    if configs_dir.exists() and not any(configs_dir.iterdir()):
-        if args.dry_run:
-            print(f"  [dry-run] would remove empty dir: {configs_dir}", file=sys.stderr)
-        else:
-            configs_dir.rmdir()
-        removed.append(str(configs_dir))
-
-    kept = str(target / "production_artifacts")
     result = {
         "root": str(target),
         "dry_run": args.dry_run,
         "removed": removed,
         "skipped": skipped,
-        "kept": kept,
     }
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0

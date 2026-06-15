@@ -9,6 +9,7 @@ from typing import Any
 
 from harness_core.capability_scaffold import scaffold_capability
 from harness_core.capability_registry import evaluate_capability, list_capabilities, promote_capability
+from harness_core.agent_rag import build_agent_rag_pack
 from harness_core.autopilot import plan_next_growth_action
 from harness_core.context_budget import build_context_pack, measure_context_savings
 from harness_core.context_pack_audit import audit_context_packs
@@ -48,7 +49,15 @@ from harness_core.research_registry import (
     refresh_research_sources,
 )
 from harness_core.retrieval_eval import evaluate_hybrid_dataset
-from harness_core.router import choose_center, default_state, load_state, save_state
+from harness_core.router import choose_center, default_state, load_state, save_state, suggest_model_tier
+from harness_core.trajectory import begin_trajectory, record_step, end_trajectory, list_trajectories, classify_failure
+from harness_core.telemetry import new_chain, begin_span, end_span, summarize_chain, recent_telemetry
+from harness_core.lifecycle import fire_event, list_hooks, register_hook
+from harness_core.project_growth import (
+    growth_status, next_project_action, record_routing_evidence,
+    extract_pattern_from_trajectory, search_patterns,
+)
+from harness_core.hack_detector import check_trajectory, scan_trajectories
 from harness_core.search_index import build_index, build_indexed_context_pack, search_index
 from harness_core.semantic_index import plan_semantic_index
 from harness_core.self_growth import run_growth_cycle
@@ -59,7 +68,7 @@ from harness_core.token_ledger import record_usage, summarize_usage
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_PATH = Path(os.environ.get("HARNESS_STATE_PATH", ROOT / ".harness" / "state.json"))
-ARTIFACTS_DIR = Path(os.environ.get("HARNESS_ARTIFACTS_DIR", ROOT / "production_artifacts"))
+ARTIFACTS_DIR = Path(os.environ.get("HARNESS_ARTIFACTS_DIR", ROOT / ".harness"))
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2024-11-05")
 
 
@@ -82,11 +91,276 @@ TOOLS = [
     },
     {
         "name": "harness_route_task",
-        "description": "Decide which center should lead a task and whether RAG/local summarization should run before cloud work.",
+        "description": "Decide which center should lead a task and whether RAG/local summarization should run before cloud work. Also returns suggested_model_tier (opus/sonnet/haiku) based on task complexity.",
         "inputSchema": {
             "type": "object",
-            "properties": {"task": {"type": "string"}},
+            "properties": {
+                "task": {"type": "string"},
+                "root": {"type": "string", "description": "Project root for project-specific state (optional)"},
+            },
             "required": ["task"],
+        },
+    },
+    # ── Phase 1: Tiered model ─────────────────────────────────────────────────
+    {
+        "name": "harness_suggest_model_tier",
+        "description": "Return the suggested Claude model tier (opus/sonnet/haiku) for a task based on complexity keywords. Use this before cloud calls to pick the right model.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string"},
+                "root": {"type": "string", "description": "Project root to read per-project model_tiers config (optional)"},
+            },
+            "required": ["task"],
+        },
+    },
+    # ── Phase 2: Trajectory ──────────────────────────────────────────────────
+    {
+        "name": "harness_begin_trajectory",
+        "description": "Start a new trajectory session to track agent tool calls step-by-step. Returns session_id to pass to harness_record_step and harness_end_trajectory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":    {"type": "string"},
+                "center":  {"type": "string"},
+                "model":   {"type": "string"},
+                "task":    {"type": "string"},
+            },
+            "required": ["root", "center", "model", "task"],
+        },
+    },
+    {
+        "name": "harness_record_step",
+        "description": "Record one tool-call step into an active trajectory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":           {"type": "string"},
+                "session_id":     {"type": "string"},
+                "tool":           {"type": "string"},
+                "result_status":  {"type": "string", "description": "ok | tool_error | env_error | timeout"},
+                "args_hash":      {"type": "string"},
+                "duration_ms":    {"type": "integer"},
+                "tokens":         {"type": "integer"},
+                "note":           {"type": "string"},
+            },
+            "required": ["root", "session_id", "tool", "result_status"],
+        },
+    },
+    {
+        "name": "harness_end_trajectory",
+        "description": "Close a trajectory session and record outcome. Automatically extracts patterns on success and classifies failure category.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":         {"type": "string"},
+                "session_id":   {"type": "string"},
+                "outcome":      {"type": "string", "description": "success | failure | partial"},
+                "failure_step": {"type": "integer"},
+            },
+            "required": ["root", "session_id", "outcome"],
+        },
+    },
+    {
+        "name": "harness_list_trajectories",
+        "description": "List recent trajectory sessions with outcome and failure category.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":  {"type": "string"},
+                "limit": {"type": "integer", "default": 20},
+            },
+            "required": ["root"],
+        },
+    },
+    # ── Phase 3: Lifecycle hooks ──────────────────────────────────────────────
+    {
+        "name": "harness_fire_event",
+        "description": "Fire a lifecycle event (before_tool / after_tool / on_error / on_decision). Triggers all matching hooks including webhooks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":          {"type": "string"},
+                "event":         {"type": "string", "description": "before_tool | after_tool | on_error | on_decision | on_session_start | on_session_end"},
+                "tool":          {"type": "string"},
+                "session_id":    {"type": "string"},
+                "center":        {"type": "string"},
+                "result_status": {"type": "string"},
+                "duration_ms":   {"type": "integer"},
+                "tokens":        {"type": "integer"},
+                "error":         {"type": "string"},
+            },
+            "required": ["root", "event", "tool"],
+        },
+    },
+    {
+        "name": "harness_register_hook",
+        "description": "Register a lifecycle hook for a project. Hooks run on every matching tool call event.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":         {"type": "string"},
+                "event":        {"type": "string", "description": "before_tool | after_tool | on_error | on_decision | on_session_start | on_session_end"},
+                "tool_pattern": {"type": "string", "description": "Tool name or glob pattern (e.g. shell_* or *)"},
+                "action":       {"type": "string", "description": "allow | cancel | webhook | record | require_confirm | record_trajectory_failure"},
+                "webhook_url":  {"type": "string"},
+                "enabled":      {"type": "boolean", "default": True},
+            },
+            "required": ["root", "event", "action"],
+        },
+    },
+    {
+        "name": "harness_list_hooks",
+        "description": "List all lifecycle hooks configured for a project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"root": {"type": "string"}},
+            "required": ["root"],
+        },
+    },
+    # ── Phase 4: Per-project growth ───────────────────────────────────────────
+    {
+        "name": "harness_project_growth_status",
+        "description": "Show the self-growth state of a specific project: feature progress, pattern count, routing evidence, experiment queue.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"root": {"type": "string"}},
+            "required": ["root"],
+        },
+    },
+    {
+        "name": "harness_next_project_action",
+        "description": "Return the highest-priority growth action for a specific project (run experiment, implement feature, collect evidence, etc.).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"root": {"type": "string"}},
+            "required": ["root"],
+        },
+    },
+    {
+        "name": "harness_record_routing_evidence",
+        "description": "Record the outcome of a routing decision for a project, enabling the harness to learn which centers/models work best over time.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":        {"type": "string"},
+                "center":      {"type": "string"},
+                "task_type":   {"type": "string"},
+                "outcome":     {"type": "string", "description": "success | failure | partial"},
+                "model_tier":  {"type": "string"},
+                "duration_ms": {"type": "integer"},
+            },
+            "required": ["root", "center", "task_type", "outcome"],
+        },
+    },
+    {
+        "name": "harness_search_patterns",
+        "description": "Search the per-project pattern database for successful solution patterns matching a query.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":  {"type": "string"},
+                "query": {"type": "string"},
+                "top_k": {"type": "integer", "default": 5},
+            },
+            "required": ["root", "query"],
+        },
+    },
+    # ── Phase 5: Telemetry ────────────────────────────────────────────────────
+    {
+        "name": "harness_new_chain",
+        "description": "Start a new telemetry chain (top-level query). Returns chain_id for span tracking.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":   {"type": "string"},
+                "task":   {"type": "string"},
+                "center": {"type": "string"},
+            },
+            "required": ["root", "task", "center"],
+        },
+    },
+    {
+        "name": "harness_begin_span",
+        "description": "Start a telemetry span for one tool call within a chain.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":     {"type": "string"},
+                "chain_id": {"type": "string"},
+                "tool":     {"type": "string"},
+                "depth":    {"type": "integer", "default": 0},
+            },
+            "required": ["root", "chain_id", "tool"],
+        },
+    },
+    {
+        "name": "harness_end_span",
+        "description": "Close a telemetry span and record timing + token counts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":       {"type": "string"},
+                "chain_id":   {"type": "string"},
+                "span_id":    {"type": "string"},
+                "tokens_in":  {"type": "integer", "default": 0},
+                "tokens_out": {"type": "integer", "default": 0},
+                "status":     {"type": "string", "default": "ok"},
+            },
+            "required": ["root", "chain_id", "span_id"],
+        },
+    },
+    {
+        "name": "harness_chain_summary",
+        "description": "Return timing and token summary for a completed chain.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":     {"type": "string"},
+                "chain_id": {"type": "string"},
+            },
+            "required": ["root", "chain_id"],
+        },
+    },
+    {
+        "name": "harness_recent_telemetry",
+        "description": "Return summaries of the most recent telemetry chains for a project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":  {"type": "string"},
+                "limit": {"type": "integer", "default": 10},
+            },
+            "required": ["root"],
+        },
+    },
+    # ── Phase 6: Hack detection ───────────────────────────────────────────────
+    {
+        "name": "harness_check_trajectory_hacks",
+        "description": "Analyse a single trajectory for evaluation gaming signals (artifact unchanged, empty output success, circular tool calls, etc.).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":                  {"type": "string"},
+                "session_id":            {"type": "string"},
+                "prior_artifact_hash":   {"type": "string"},
+                "current_artifact_hash": {"type": "string"},
+                "prior_score":           {"type": "number"},
+                "current_score":         {"type": "number"},
+            },
+            "required": ["root", "session_id"],
+        },
+    },
+    {
+        "name": "harness_scan_hacks",
+        "description": "Scan all recent trajectories for hack signals and return a summary with hack rate.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":  {"type": "string"},
+                "limit": {"type": "integer", "default": 50},
+            },
+            "required": ["root"],
         },
     },
     {
@@ -255,6 +529,21 @@ TOOLS = [
                 "query": {"type": "string"},
                 "top_k": {"type": "integer", "default": 5},
                 "max_chars_per_chunk": {"type": "integer", "default": 1200},
+            },
+            "required": ["root", "query"],
+        },
+    },
+    {
+        "name": "harness_local_context_pack",
+        "description": "Use the configured local LLM sub-agent (Ollama) to pre-fetch and summarise context for a query before passing it to a cloud model. Reads local_llm config from .harness/project.json. Falls back to standard contextual context pack if no local LLM is configured.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root":               {"type": "string", "description": "Target project root"},
+                "query":              {"type": "string", "description": "Context query"},
+                "top_k":              {"type": "integer", "default": 6},
+                "max_chars_per_chunk":{"type": "integer", "default": 1200},
+                "max_summary_chars":  {"type": "integer", "default": 3000},
             },
             "required": ["root", "query"],
         },
@@ -822,6 +1111,21 @@ TOOLS = [
         },
     },
     {
+        "name": "harness_agent_rag_pack",
+        "description": "Build one shared RAG context pack plus Codex, Claude Sonnet, Antigravity, and Ollama commands so every center consumes the same retrieved context.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "string"},
+                "task": {"type": "string"},
+                "center": {"type": "string", "default": "project"},
+                "local_model": {"type": "string"},
+                "max_payload_chars": {"type": "integer", "default": 9000},
+            },
+            "required": ["root", "task"],
+        },
+    },
+    {
         "name": "harness_aggregate_health",
         "description": "Aggregate tests, doctor, MCP, retrieval, research, readiness, campaign, and token experiment evidence.",
         "inputSchema": {
@@ -890,8 +1194,142 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         save_state(STATE_PATH, state)
         return _text({"ok": True, "preferred_center": center})
     if name == "harness_route_task":
-        usage = summarize_usage(ARTIFACTS_DIR / "usage.jsonl")
-        return _text(choose_center(arguments["task"], state, usage_summary=usage))
+        usage  = summarize_usage(ARTIFACTS_DIR / "usage.jsonl")
+        result = choose_center(arguments["task"], state, usage_summary=usage)
+        # Load per-project state if root provided
+        proj_state = state
+        if arguments.get("root"):
+            proj_path = Path(arguments["root"]).expanduser() / ".harness" / "state.json"
+            if proj_path.exists():
+                proj_state = load_state(proj_path)
+        result["model_tier"] = suggest_model_tier(arguments["task"], proj_state)
+        return _text(result)
+    if name == "harness_suggest_model_tier":
+        proj_state = state
+        if arguments.get("root"):
+            proj_path = Path(arguments["root"]).expanduser() / ".harness" / "state.json"
+            if proj_path.exists():
+                proj_state = load_state(proj_path)
+        return _text(suggest_model_tier(arguments["task"], proj_state))
+    # ── Trajectory ────────────────────────────────────────────────────────────
+    if name == "harness_begin_trajectory":
+        root = Path(arguments["root"]).expanduser()
+        return _text({"session_id": begin_trajectory(
+            root, center=arguments["center"], model=arguments["model"], task=arguments["task"]
+        )})
+    if name == "harness_record_step":
+        root = Path(arguments["root"]).expanduser()
+        return _text(record_step(
+            root, arguments["session_id"],
+            tool=arguments["tool"],
+            result_status=arguments["result_status"],
+            args_hash=arguments.get("args_hash"),
+            duration_ms=int(arguments.get("duration_ms", 0)),
+            tokens=int(arguments.get("tokens", 0)),
+            note=arguments.get("note", ""),
+        ))
+    if name == "harness_end_trajectory":
+        root = Path(arguments["root"]).expanduser()
+        traj = end_trajectory(
+            root, arguments["session_id"],
+            outcome=arguments["outcome"],
+            failure_step=arguments.get("failure_step"),
+        )
+        # Auto-extract pattern if success
+        if traj.get("outcome") == "success":
+            extract_pattern_from_trajectory(root, traj)
+        return _text(traj)
+    if name == "harness_list_trajectories":
+        root = Path(arguments["root"]).expanduser()
+        return _text(list_trajectories(root, limit=int(arguments.get("limit", 20))))
+    # ── Lifecycle hooks ────────────────────────────────────────────────────────
+    if name == "harness_fire_event":
+        root = Path(arguments["root"]).expanduser()
+        return _text(fire_event(
+            root, arguments["event"],
+            tool=arguments["tool"],
+            session_id=arguments.get("session_id"),
+            center=arguments.get("center", ""),
+            result_status=arguments.get("result_status", ""),
+            duration_ms=int(arguments.get("duration_ms", 0)),
+            tokens=int(arguments.get("tokens", 0)),
+            error=arguments.get("error", ""),
+        ))
+    if name == "harness_register_hook":
+        root = Path(arguments["root"]).expanduser()
+        return _text(register_hook(
+            root,
+            event=arguments["event"],
+            tool_pattern=arguments.get("tool_pattern", "*"),
+            action=arguments["action"],
+            webhook_url=arguments.get("webhook_url"),
+            enabled=arguments.get("enabled", True),
+        ))
+    if name == "harness_list_hooks":
+        return _text(list_hooks(Path(arguments["root"]).expanduser()))
+    # ── Per-project growth ─────────────────────────────────────────────────────
+    if name == "harness_project_growth_status":
+        return _text(growth_status(Path(arguments["root"]).expanduser()))
+    if name == "harness_next_project_action":
+        return _text(next_project_action(Path(arguments["root"]).expanduser()))
+    if name == "harness_record_routing_evidence":
+        root = Path(arguments["root"]).expanduser()
+        record_routing_evidence(
+            root,
+            center=arguments["center"],
+            task_type=arguments["task_type"],
+            outcome=arguments["outcome"],
+            model_tier=arguments.get("model_tier", ""),
+            duration_ms=int(arguments.get("duration_ms", 0)),
+        )
+        return _text({"recorded": True})
+    if name == "harness_search_patterns":
+        root = Path(arguments["root"]).expanduser()
+        return _text(search_patterns(root, arguments["query"], top_k=int(arguments.get("top_k", 5))))
+    # ── Telemetry ──────────────────────────────────────────────────────────────
+    if name == "harness_new_chain":
+        root = Path(arguments["root"]).expanduser()
+        return _text({"chain_id": new_chain(root, task=arguments["task"], center=arguments["center"])})
+    if name == "harness_begin_span":
+        root = Path(arguments["root"]).expanduser()
+        return _text({"span_id": begin_span(
+            root, arguments["chain_id"],
+            tool=arguments["tool"],
+            depth=int(arguments.get("depth", 0)),
+        )})
+    if name == "harness_end_span":
+        root = Path(arguments["root"]).expanduser()
+        return _text(end_span(
+            root, arguments["chain_id"], arguments["span_id"],
+            tokens_in=int(arguments.get("tokens_in", 0)),
+            tokens_out=int(arguments.get("tokens_out", 0)),
+            status=arguments.get("status", "ok"),
+        ))
+    if name == "harness_chain_summary":
+        root = Path(arguments["root"]).expanduser()
+        return _text(summarize_chain(root, arguments["chain_id"]))
+    if name == "harness_recent_telemetry":
+        root = Path(arguments["root"]).expanduser()
+        return _text(recent_telemetry(root, limit=int(arguments.get("limit", 10))))
+    # ── Hack detection ─────────────────────────────────────────────────────────
+    if name == "harness_check_trajectory_hacks":
+        root = Path(arguments["root"]).expanduser()
+        traj_dir = root / ".harness" / "trajectories"
+        traj_path = traj_dir / f"{arguments['session_id']}.json"
+        if not traj_path.exists():
+            return _text({"error": f"trajectory not found: {arguments['session_id']}"})
+        import json as _json
+        traj = _json.loads(traj_path.read_text(encoding="utf-8"))
+        return _text(check_trajectory(
+            traj,
+            prior_artifact_hash=arguments.get("prior_artifact_hash"),
+            current_artifact_hash=arguments.get("current_artifact_hash"),
+            prior_score=arguments.get("prior_score"),
+            current_score=arguments.get("current_score"),
+        ))
+    if name == "harness_scan_hacks":
+        root = Path(arguments["root"]).expanduser()
+        return _text(scan_trajectories(root, limit=int(arguments.get("limit", 50))))
     if name == "harness_record_handoff":
         return _record_handoff(arguments)
     if name == "harness_delegate_claude":
@@ -958,6 +1396,14 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 )
             }
         )
+    if name == "harness_local_context_pack":
+        return _text(_local_context_pack(
+            Path(arguments["root"]).expanduser(),
+            arguments["query"],
+            top_k=int(arguments.get("top_k", 6)),
+            max_chars_per_chunk=int(arguments.get("max_chars_per_chunk", 1200)),
+            max_summary_chars=int(arguments.get("max_summary_chars", 3000)),
+        ))
     if name == "harness_init_project":
         return _text(init_project_harness(Path(arguments["root"]).expanduser(), arguments["features"]))
     if name == "harness_analyze_project":
@@ -1225,8 +1671,18 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return _text(audit_context_packs(Path(arguments["root"]).expanduser(), max_chars_per_pack=int(arguments.get("max_chars_per_pack", 12000))))
     if name == "harness_codex_preflight":
         root = Path(arguments["root"]).expanduser()
-        memory_path = Path(arguments.get("memory_path") or root / "production_artifacts" / "memory.jsonl").expanduser()
+        memory_path = Path(arguments.get("memory_path") or root / ".harness" / "memory.jsonl").expanduser()
         return _text(build_codex_preflight(root, arguments["task"], memory_path=memory_path, max_codex_chars=int(arguments.get("max_codex_chars", 6000))))
+    if name == "harness_agent_rag_pack":
+        return _text(
+            build_agent_rag_pack(
+                Path(arguments["root"]).expanduser(),
+                arguments["task"],
+                center=arguments.get("center", "project"),
+                local_model=arguments.get("local_model"),
+                max_payload_chars=int(arguments.get("max_payload_chars", 9000)),
+            )
+        )
     if name == "harness_aggregate_health":
         return _text(aggregate_health(tests=arguments["tests"], doctor=arguments["doctor"], mcp=arguments["mcp"], retrieval=arguments["retrieval"], research=arguments["research"], readiness=arguments["readiness"], campaign=arguments["campaign"], experiments=arguments.get("experiments"), security=arguments.get("security"), context_packs=arguments.get("context_packs")))
     if name == "harness_init_experiment_queue":
@@ -1385,6 +1841,70 @@ def _text(payload: Any) -> dict[str, Any]:
 
 def _ok(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _local_context_pack(
+    root: Path,
+    query: str,
+    *,
+    top_k: int = 6,
+    max_chars_per_chunk: int = 1200,
+    max_summary_chars: int = 3000,
+) -> dict[str, Any]:
+    """Retrieve context with BM25, then optionally summarise via local LLM sub-agent."""
+    from harness_core.contextual_chunks import build_contextual_context_pack
+
+    # Read local LLM config
+    project_json = root / ".harness" / "project.json"
+    llm_cfg: dict[str, Any] = {}
+    if project_json.exists():
+        try:
+            meta = json.loads(project_json.read_text(encoding="utf-8"))
+            llm_cfg = meta.get("local_llm", {})
+        except Exception:
+            pass
+
+    raw_pack = build_contextual_context_pack(root, query, top_k=top_k,
+                                             max_chars_per_chunk=max_chars_per_chunk)
+
+    if not llm_cfg.get("enabled") or not llm_cfg.get("model"):
+        return {"context_pack": raw_pack, "source": "bm25", "local_llm": None}
+
+    model  = llm_cfg["model"]
+    host   = llm_cfg.get("host", "http://localhost:11434").rstrip("/")
+    prompt = (
+        f"You are a context retrieval sub-agent. "
+        f"Given the query and code context below, extract and summarise "
+        f"only the parts directly relevant to the query. "
+        f"Be concise — target {max_summary_chars} characters max.\n\n"
+        f"Query: {query}\n\n"
+        f"Context:\n{raw_pack[:8000]}"
+    )
+    try:
+        import urllib.request as _ur
+        payload = json.dumps({
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"num_predict": max_summary_chars // 3},
+        }).encode("utf-8")
+        req = _ur.Request(f"{host}/api/generate", data=payload,
+                          headers={"Content-Type": "application/json"})
+        with _ur.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        summary = data.get("response", "").strip()
+        if summary:
+            return {
+                "context_pack": summary,
+                "source": "local_llm",
+                "local_llm": model,
+                "raw_chars": len(raw_pack),
+                "summary_chars": len(summary),
+            }
+    except Exception as exc:
+        pass  # fall back to raw BM25 pack on any Ollama error
+
+    return {"context_pack": raw_pack, "source": "bm25_fallback", "local_llm": model}
 
 
 def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:

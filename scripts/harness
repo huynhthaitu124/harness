@@ -49,12 +49,61 @@ def _row(label: str, value: str) -> None:
 # Command implementations  (unchanged logic, called both from TUI and CLI)
 # ─────────────────────────────────────────────────────────────────────────────
 
-HARNESS_PATHS = [".harness", "HARNESS.md", "HARNESS.html", "configs/claude-mcp.json"]
+HARNESS_PATHS = [".harness", "HARNESS.md", "HARNESS.html"]
+
+
+def _select_research_agent(target: Path) -> str:
+    """Interactive agent selection — shown FIRST in harness init.
+
+    Returns an agent name (e.g. "claude", "ollama:llama3.2") or "skip".
+    """
+    from harness_core.agent_research import detect_agent_clis
+    from harness_core.tui import MenuItem, menu
+
+    print()
+    print(f"  {B}Select research agent{R}")
+    _info("Chosen agent will deep-read the codebase and generate project-specific")
+    _info("sections for HARNESS.html: architecture, modules, conventions, workflow.")
+    print()
+
+    agents    = detect_agent_clis()
+    available = [a for a in agents if a["available"]]
+    missing   = [a for a in agents if not a["available"] and a["model"] is None]
+
+    if missing:
+        labels = ", ".join(a["label"].split("(")[0].strip() for a in missing)
+        _info(f"{DIM}Not installed: {labels}{R}")
+        print()
+
+    items: list[MenuItem] = []
+    for a in available:
+        detail = a["detail"]
+        if len(detail) > 60:
+            detail = detail[:57] + "..."
+        items.append(MenuItem(key=a["name"], label=a["label"], desc=f"✓  {detail}"))
+    items.append(MenuItem(key="skip", label="Skip  (standard sections only)",
+                          desc="generate HARNESS.html without agent-driven deep research"))
+
+    if not available:
+        _warn("no agent CLIs detected — skipping research")
+        _info("to enable: install claude CLI or start Ollama with a chat model")
+        print()
+        return "skip"
+
+    chosen = menu("Choose research agent:", items)
+    if not chosen:
+        _info("no agent selected — using standard sections only")
+        return "skip"
+    return chosen
 
 
 def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
              from_analysis: str | None = None) -> int:
     from harness_core.project_init import analyze_project, init_project_full
+
+    # ── Step 0: Agent selection (must be first, before any other action) ───────
+    research_agent = _select_research_agent(target)
+    print()
 
     print(f"\n{B}Analyzing{R} {DIM}{target.name}{R} ...")
 
@@ -86,16 +135,35 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
         _warn("dry-run — no files will be written")
         return 0
 
+    # ── Step 1: Agent deep research ───────────────────────────────────────────
+    agent_sections: dict | None = None
+    if research_agent != "skip":
+        print()
+        _info(f"Running deep research with  {B}{research_agent}{R} ...")
+        _info(f"{DIM}This may take up to 2 minutes — the agent reads key files...{R}")
+        try:
+            from harness_core.agent_research import run_agent_research
+            agent_sections = run_agent_research(target, research_agent, analysis)
+            if agent_sections:
+                section_count = len(agent_sections.get("sections", []))
+                _ok(f"research complete  {DIM}{section_count} project-specific sections{R}")
+            else:
+                _warn("agent returned no structured content — using standard sections")
+        except Exception as exc:
+            _warn(f"agent research failed: {exc}")
+            _info("continuing with standard sections")
+
     print()
-    result = init_project_full(target, HARNESS_ROOT, analysis, dry_run=False, skip_index=skip_index)
+    result = init_project_full(target, HARNESS_ROOT, analysis, dry_run=False, skip_index=skip_index,
+                               agent_sections=agent_sections)
 
     # ── show created artifacts (check disk, not just the reported list) ────────
     artifacts = [
-        (target / ".harness",                               ".harness/",              "config + BM25 index"),
-        (target / "HARNESS.md",                             "HARNESS.md",             "project guidelines"),
-        (target / "HARNESS.html",                           "HARNESS.html",           "visual architecture doc"),
-        (target / "configs" / "claude-mcp.json",            "configs/claude-mcp.json","MCP server config"),
-        (target / "production_artifacts" / "memory.jsonl",  "production_artifacts/memory.jsonl", "seeded memory"),
+        (target / ".harness",                    ".harness/",              "config + BM25 index + data"),
+        (target / ".harness" / "memory.jsonl",   ".harness/memory.jsonl",  "seeded memory"),
+        (target / ".harness" / "mcp.json",       ".harness/mcp.json",      "MCP server config"),
+        (target / "HARNESS.md",                  "HARNESS.md",             "project guidelines"),
+        (target / "HARNESS.html",                "HARNESS.html",           "visual architecture doc"),
     ]
     for path, label, desc in artifacts:
         if path.exists():
@@ -127,17 +195,8 @@ def run_eject(target: Path, *, dry_run: bool = False) -> int:
             _ok(f"removed  {DIM}{rel}{R}")
         removed.append(rel)
 
-    configs_dir = target / "configs"
-    if configs_dir.exists() and not any(configs_dir.iterdir()):
-        if not dry_run:
-            configs_dir.rmdir()
-        removed.append("configs/")
-
     if not removed:
         _info("nothing to remove — project was not initialized")
-    else:
-        print()
-        _info(f"kept  {DIM}production_artifacts/{R}  (data preserved)")
 
     return 0
 
@@ -217,12 +276,54 @@ def run_index(target: Path) -> int:
     return 0
 
 
+def run_center(target: Path, *, action: str, value: str | None = None) -> int:
+    from harness_core.router import CENTERS, default_state, load_state, save_state
+
+    valid = ("auto", *CENTERS)
+    state_path = target / ".harness" / "state.json"
+    state = load_state(state_path) if state_path.exists() else default_state()
+    if action == "get":
+        _row("Center", state.get("preferred_center", "auto"))
+        return 0
+    if action != "set":
+        _warn(f"unknown center action: {action}")
+        return 2
+    if value not in valid:
+        _warn(f"center must be one of: {', '.join(valid)}")
+        return 2
+    state["preferred_center"] = value
+    save_state(state_path, state)
+    _ok(f"project center set to  {B}{value}{R}")
+    _info(f"saved  {DIM}{state_path}{R}")
+    return 0
+
+
+def run_rag_pack(target: Path, *, query: str, center: str = "project", local_model: str | None = None) -> int:
+    from harness_core.agent_rag import build_agent_rag_pack
+
+    report = build_agent_rag_pack(target, query, center=center, local_model=local_model)
+    print()
+    _ok(f"Context pack  {DIM}{report['context_pack_path']}{R}")
+    _row("Center", str(report["center"]))
+    _row("Sources", ", ".join(report["sources"]) or "none")
+    _row("Local model", str(report["local_model"]))
+    _row("Savings est.", f"{report['estimated_savings_percent']}%")
+    print()
+    _info("Agents should read the same pack before repo reasoning:")
+    for name, command in report["commands"].items():
+        if name == "refresh":
+            continue
+        _row(name, command)
+    print()
+    return 0 if report["verdict"] == "PASS" else 1
+
+
 def run_status(target: Path) -> int:
     state_path   = target / ".harness" / "state.json"
     project_json = target / ".harness" / "project.json"
-    memory_path  = target / "production_artifacts" / "memory.jsonl"
-    feature_path = target / "production_artifacts" / "feature_list.json"
-    semantic_idx = target / "production_artifacts" / "indexes" / "semantic.json"
+    memory_path  = target / ".harness" / "memory.jsonl"
+    feature_path = target / ".harness" / "feature_list.json"
+    semantic_idx = target / ".harness" / "indexes" / "semantic.json"
 
     print()
     if not state_path.exists():
@@ -249,6 +350,8 @@ def run_status(target: Path) -> int:
         state  = json.loads(state_path.read_text(encoding="utf-8"))
         center = state.get("preferred_center", "auto")
         _row("Center",    center)
+    else:
+        state = {}
 
     print()
     if memory_path.exists():
@@ -266,68 +369,299 @@ def run_status(target: Path) -> int:
     bm25 = target / ".harness" / "index.json"
     _row("BM25 index",  f"{G}ready{R}" if bm25.exists() else f"{Y}missing{R}")
     _row("Semantic idx", f"{G}ready{R}" if semantic_idx.exists() else f"{DIM}not built{R}")
+
+    meta = json.loads(project_json.read_text(encoding="utf-8")) if project_json.exists() else {}
+    llm = meta.get("local_llm")
+    local_model = state.get("local_model", {})
+    if llm and llm.get("enabled"):
+        _row("Local LLM",  f"{G}{llm['model']}{R}  {DIM}context sub-agent{R}")
+    elif local_model.get("enabled"):
+        _row("Local LLM",  f"{G}{local_model.get('model', 'ollama')}{R}  {DIM}{local_model.get('role', 'rag_distiller')}{R}")
+    else:
+        _row("Local LLM",  f"{DIM}not configured{R}")
+    pack = target / ".harness" / "context_packs" / "last-rag-pack.md"
+    _row("RAG pack", f"{G}ready{R}  {DIM}{pack}{R}" if pack.exists() else f"{DIM}not built — run harness rag-pack{R}")
+
+    # Lifecycle hooks
+    hooks_path = target / ".harness" / "hooks.json"
+    if hooks_path.exists():
+        hooks_data = json.loads(hooks_path.read_text(encoding="utf-8"))
+        h_count = len([h for h in hooks_data.get("hooks", []) if h.get("enabled", True)])
+        _row("Hooks",      f"{h_count} active")
+    else:
+        _row("Hooks",      f"{DIM}not configured{R}")
+
+    # Per-project growth
+    growth_dir = target / ".harness" / "growth"
+    if growth_dir.exists():
+        pd_path = growth_dir / "pattern_db.jsonl"
+        patterns = sum(1 for l in pd_path.read_text(encoding="utf-8").splitlines() if l.strip()) if pd_path.exists() else 0
+        ev_path  = growth_dir / "routing_evidence.jsonl"
+        evidence = sum(1 for l in ev_path.read_text(encoding="utf-8").splitlines() if l.strip()) if ev_path.exists() else 0
+        _row("Growth",     f"{patterns} patterns  {DIM}{evidence} routing records{R}")
+    else:
+        _row("Growth",     f"{DIM}not bootstrapped{R}")
+
+    # Trajectories
+    traj_dir = target / ".harness" / "trajectories"
+    if traj_dir.exists():
+        traj_files = list(traj_dir.glob("*.json"))
+        success_n  = 0
+        fail_n     = 0
+        for tf in traj_files[-20:]:
+            try:
+                d = json.loads(tf.read_text(encoding="utf-8"))
+                if d.get("outcome") == "success": success_n += 1
+                elif d.get("outcome") == "failure": fail_n += 1
+            except Exception:
+                pass
+        _row("Trajectories", f"{len(traj_files)} total  {DIM}{success_n}✓ {fail_n}✗ (last 20){R}")
+
+    # Recent telemetry
+    telemetry_dir = target / ".harness" / "telemetry"
+    if telemetry_dir.exists():
+        chain_files = list(telemetry_dir.glob("chain_*.json"))
+        _row("Telemetry",  f"{len(chain_files)} chains recorded")
     print()
     return 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Semantic index helpers
+# Curated model catalogue
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Embedding models — first one is the recommended default
+_EMBED_CATALOGUE = [
+    ("nomic-embed-text",     "137 MB", "best balance — fast, accurate, widely used"),
+    ("mxbai-embed-large",    "670 MB", "high accuracy, larger memory footprint"),
+    ("bge-m3",               "1.2 GB", "multilingual — EN/VI/ZH/JP supported"),
+    ("all-minilm",           "46 MB",  "ultra-fast, low RAM — good for large repos"),
+    ("snowflake-arctic-embed","335 MB","optimised for code search"),
+]
+
+# LLM sub-agent models for context retrieval
+_LLM_CATALOGUE = [
+    ("qwen3:8b",            "5.2 GB", "fast reasoning, Vietnamese + EN, low VRAM"),
+    ("qwen2.5-coder:7b",    "4.7 GB", "code-optimised, great for context extraction"),
+    ("llama3.2:3b",         "2.0 GB", "very fast, minimal RAM — quick summarisation"),
+    ("gemma3:4b",           "3.3 GB", "Google model, good at instruction following"),
+    ("phi4-mini:3.8b",      "2.5 GB", "compact reasoning, low footprint"),
+    ("mistral:7b",          "4.1 GB", "general-purpose, strong at retrieval tasks"),
+]
+
+
+def _pull_ollama_model(model: str) -> bool:
+    """Stream `ollama pull <model>` and return True on success."""
+    import subprocess
+    _info(f"pulling  {B}{model}{R}  from Ollama registry ...")
+    try:
+        proc = subprocess.run(
+            ["ollama", "pull", model],
+            check=True,
+        )
+        return proc.returncode == 0
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        _warn(f"pull failed: {exc}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Semantic index + local LLM sub-agent setup
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _maybe_build_semantic_index(target: Path) -> None:
     from harness_core.semantic_index import detect_ollama, build_semantic_index, ollama_embed
-    from harness_core.tui import confirm, select, MenuItem, menu
+    from harness_core.tui import confirm, MenuItem, menu
 
     embed_models, other_models = detect_ollama()
-    all_models = embed_models + other_models
+    ollama_running = bool(embed_models or other_models)
 
-    if not all_models:
+    # ── Embedding index ────────────────────────────────────────────────────────
+    if not ollama_running:
         _warn("Ollama not running — semantic index skipped")
-        _info("start Ollama, pull a model, then:  harness  →  index")
-        return
+        _info("install Ollama, then:  harness  →  index")
+    else:
+        if confirm("Build semantic RAG index with Ollama?", default=True):
+            _build_embed_index(target, embed_models, other_models)
 
-    if not confirm("Build semantic RAG index with Ollama?", default=True):
-        _info("semantic index skipped")
-        return
+    # ── Local LLM sub-agent ────────────────────────────────────────────────────
+    print()
+    _info("Local LLM sub-agents help cloud models (Claude / Codex / Antigravity)")
+    _info("by pre-fetching and summarising context before the main agent call.")
+    if confirm("Configure a local LLM sub-agent for context retrieval?", default=False):
+        _configure_local_llm(target, other_models)
+    else:
+        _info("local LLM skipped — configure later:  harness  →  index")
 
-    # Build menu items — embedding models first with a clear label
+
+def _build_embed_index(target: Path, embed_models: list[str], other_models: list[str]) -> None:
+    from harness_core.semantic_index import build_semantic_index, ollama_embed
+    from harness_core.tui import MenuItem, menu, confirm
+
     items: list[MenuItem] = []
+
+    # Only show true embedding models — chat models are not listed
     for m in embed_models:
-        items.append(MenuItem(key=m, label=m, desc="✓ embedding model — fast & accurate"))
-    for m in other_models:
-        items.append(MenuItem(key=m, label=m,
-                              desc="⚠ chat/code model — slow for embeddings, may fail"))
+        # find description from catalogue if available
+        desc = next((d for (name, _, d) in _EMBED_CATALOGUE if m.split(":")[0] == name.split(":")[0]), "embedding model")
+        items.append(MenuItem(key=m, label=m, desc=f"✓  {desc}"))
 
     if not embed_models:
-        _warn("no dedicated embedding model found")
-        _info("chat models are slow for embeddings — recommended: ollama pull nomic-embed-text")
+        # Offer to pull a recommended embedding model
+        _warn("no embedding model installed")
         print()
+        pull_items = [
+            MenuItem(key=name, label=name, desc=f"{size}  —  {desc}")
+            for name, size, desc in _EMBED_CATALOGUE
+        ]
+        pull_items.append(MenuItem(key="skip", label="skip", desc="skip — do not build semantic index"))
+        to_pull = menu("Pull an embedding model from Ollama:", pull_items)
+        if not to_pull or to_pull == "skip":
+            _info("semantic index skipped")
+            return
+        if not _pull_ollama_model(to_pull):
+            _warn("could not pull model — semantic index skipped")
+            return
+        chosen = to_pull
+    else:
+        # Also offer pull option at the bottom
+        pull_item = MenuItem(key="__pull__", label="pull new model…",
+                             desc="download a recommended embedding model from Ollama")
+        items.append(pull_item)
+        chosen_key = menu("Select embedding model:", items)
+        if chosen_key is None:
+            _info("semantic index skipped")
+            return
+        if chosen_key == "__pull__":
+            pull_items = [
+                MenuItem(key=name, label=name, desc=f"{size}  —  {desc}")
+                for name, size, desc in _EMBED_CATALOGUE
+                if not any(m.startswith(name.split(":")[0]) for m in embed_models)
+            ] or [MenuItem(key=name, label=name, desc=f"{size}  —  {desc}") for name, size, desc in _EMBED_CATALOGUE]
+            to_pull = menu("Choose model to pull:", pull_items)
+            if not to_pull:
+                _info("semantic index skipped")
+                return
+            if not _pull_ollama_model(to_pull):
+                _warn("could not pull model — semantic index skipped")
+                return
+            chosen = to_pull
+        else:
+            chosen = chosen_key
 
-    chosen = menu("Select Ollama model for embeddings:", items)
-    if chosen is None:
-        _info("semantic index skipped")
-        return
-
-    index_path = target / "production_artifacts" / "indexes" / "semantic.json"
+    index_path = target / ".harness" / "indexes" / "semantic.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
 
     print()
     _info(f"building semantic index with  {B}{chosen}{R} ...")
-    if chosen in other_models:
-        _warn("chat model selected — first run may be slow")
+
+    # Pre-count chunks so we can show accurate progress
+    from harness_core.semantic_index import _chunk_repository, _load_existing
+    existing = _load_existing(index_path, chosen)
+    cached_keys = {(c["key"], c["content_hash"]) for c in existing.get("chunks", [])}
+    all_chunks  = _chunk_repository(target, chunk_lines=40, overlap_lines=8)
+    total_chunks = len(all_chunks)
+    missing_n    = sum(1 for c in all_chunks if (c["key"], c["content_hash"]) not in cached_keys)
+    reused_n     = total_chunks - missing_n
+
+    if missing_n == 0:
+        _ok(f"semantic index up to date  {DIM}{total_chunks} chunks  (all cached){R}")
+        return
+
+    _info(f"{total_chunks} chunks total  {DIM}({missing_n} to embed, {reused_n} cached){R}")
+    batch_size = 64
+    n_batches  = (missing_n + batch_size - 1) // batch_size
+
+    # Progress bar helper (inline ANSI, no extra lines)
+    import sys as _sys
+    _prog_line = [""]
+    def _progress(done: int, total: int) -> None:
+        pct   = done * 100 // max(total, 1)
+        filled = pct // 5          # 20 blocks wide
+        bar   = f"{G}{'█' * filled}{DIM}{'░' * (20 - filled)}{R}"
+        batch_n = (done + batch_size - 1) // batch_size
+        line  = f"\r  {C}·{R}  {bar}  {pct:3d}%  {DIM}batch {batch_n}/{n_batches}  ({done}/{total}){R}   "
+        _sys.stdout.write(line)
+        _sys.stdout.flush()
+        _prog_line[0] = line
 
     try:
-        stats   = build_semantic_index(target, index_path,
-                                        embedder=lambda t: ollama_embed(t, model=chosen),
-                                        model=chosen)
+        stats = build_semantic_index(
+            target, index_path,
+            embedder=lambda t: ollama_embed(t, model=chosen),
+            model=chosen,
+            batch_size=batch_size,
+            progress_cb=_progress,
+        )
+        # Clear progress line and print result
+        _sys.stdout.write("\r" + " " * (len(_prog_line[0]) + 4) + "\r")
+        _sys.stdout.flush()
         total   = stats.get("chunk_count", "?")
         reused  = stats.get("reused_count", 0)
         new_vec = stats.get("embedded_count", total)
         _ok(f"semantic index ready  {DIM}{total} chunks  ({new_vec} embedded, {reused} cached){R}")
     except Exception as exc:
+        _sys.stdout.write("\n")
         _warn(f"semantic index failed: {exc}")
-        if chosen in other_models:
-            _info("fix: ollama pull nomic-embed-text  then retry: harness  →  index")
+        _info("fix: ollama pull nomic-embed-text  then retry: harness  →  index")
+
+
+def _configure_local_llm(target: Path, installed_llms: list[str]) -> None:
+    from harness_core.tui import MenuItem, menu
+
+    items: list[MenuItem] = []
+
+    # Installed LLMs first (excluding tiny or embedding-only)
+    for m in installed_llms:
+        desc = next(
+            (f"{sz}  —  {d} (installed)" for (name, sz, d) in _LLM_CATALOGUE
+             if m.split(":")[0] == name.split(":")[0]),
+            "installed chat/code model",
+        )
+        items.append(MenuItem(key=m, label=m, desc=f"✓  {desc}"))
+
+    # Offer pullable models not yet installed
+    for name, size, desc in _LLM_CATALOGUE:
+        if not any(m.split(":")[0] == name.split(":")[0] for m in installed_llms):
+            items.append(MenuItem(key=f"__pull__{name}", label=f"{name}  ↓",
+                                  desc=f"{size}  —  {desc}  (will pull)"))
+
+    items.append(MenuItem(key="skip", label="skip", desc="no local LLM sub-agent"))
+
+    chosen = menu("Select local LLM for context sub-agent:", items)
+    if not chosen or chosen == "skip":
+        _info("local LLM sub-agent skipped")
+        return
+
+    if chosen.startswith("__pull__"):
+        model_name = chosen[len("__pull__"):]
+        if not _pull_ollama_model(model_name):
+            _warn("could not pull model")
+            return
+        chosen = model_name
+
+    # Persist to project.json
+    project_json = target / ".harness" / "project.json"
+    try:
+        meta = json.loads(project_json.read_text(encoding="utf-8")) if project_json.exists() else {}
+        meta["local_llm"] = {
+            "model":   chosen,
+            "role":    "context_retrieval",
+            "host":    "http://localhost:11434",
+            "enabled": True,
+        }
+        project_json.write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        _ok(f"local LLM sub-agent  {B}{chosen}{R}  configured")
+        print()
+        _info("How it works:")
+        _info(f"  cloud agent (Claude/Codex) calls harness_contextual_context_pack")
+        _info(f"  harness routes context queries to  {B}{chosen}{R}  locally")
+        _info(f"  summarised context is injected into the cloud agent's prompt")
+        _info(f"  net effect: cheaper cloud calls, faster context retrieval")
+    except Exception as exc:
+        _warn(f"could not save local LLM config: {exc}")
 
 
 def _install_symlink(result: dict) -> None:
@@ -383,8 +717,12 @@ _VERSION = "1.0"
 _MENU_ITEMS = [
     ("init",    "Initialize harness for this project",
                 "Detect stack, build BM25 + semantic RAG index, write HARNESS.md"),
+    ("center",  "Set preferred routing center",
+                "Choose auto / codex / claude / antigravity for this project"),
     ("index",   "Build / rebuild semantic RAG index",
                 "Pick Ollama model interactively, embed all chunks"),
+    ("rag-pack", "Build shared RAG pack for all centers",
+                 "Writes .harness/context_packs/last-rag-pack.md"),
     ("grill",   "Fill [CUSTOMIZE] section interactively",
                 "Q&A session that writes project context into HARNESS.md"),
     ("status",  "Show project state",
@@ -392,7 +730,7 @@ _MENU_ITEMS = [
     ("analyze", "Analyze project and print profile",
                 "Language detection, keywords, key files — JSON output"),
     ("eject",   "Remove harness config, keep data",
-                "Deletes .harness/, HARNESS.md, HARNESS.html — keeps production_artifacts/"),
+                "Deletes .harness/, HARNESS.md, HARNESS.html from the project"),
 ]
 
 
@@ -409,6 +747,42 @@ def _project_info(target: Path) -> str:
         except Exception:
             pass
     return f"{target.name}  ○ not initialized"
+
+
+def _pick_center(target: Path) -> None:
+    """Interactive center picker — shows current center and lets user change it."""
+    from harness_core.tui import MenuItem, menu
+
+    # Read current center from state
+    state_path = target / ".harness" / "state.json"
+    current = "auto"
+    if state_path.exists():
+        try:
+            current = json.loads(state_path.read_text(encoding="utf-8")).get("preferred_center", "auto")
+        except Exception:
+            pass
+
+    _row("Current center", current)
+    print()
+
+    _CENTER_DESCRIPTIONS = {
+        "auto":        "Let harness pick per task — reads keywords + quota + token cost",
+        "codex":       "Heavy codegen, repo-wide refactor, long multi-file edits",
+        "claude":      "Compact review, quick fixes, debugging, analysis",
+        "antigravity": "Broad research, large-context reads, architecture planning",
+    }
+
+    items: list[MenuItem] = []
+    for c, desc in _CENTER_DESCRIPTIONS.items():
+        marker = "  ← current" if c == current else ""
+        items.append(MenuItem(key=c, label=f"{c}{marker}", desc=desc))
+
+    chosen = menu("Choose preferred center:", items)
+    if chosen is None:
+        _info("cancelled — center unchanged")
+        return
+
+    run_center(target, action="set", value=chosen)
 
 
 def launch_menu(target: Path) -> None:
@@ -429,6 +803,8 @@ def launch_menu(target: Path) -> None:
         try:
             if chosen == "init":
                 run_init(target)
+            elif chosen == "center":
+                _pick_center(target)
             elif chosen == "eject":
                 ok = confirm(
                     "Remove .harness/, HARNESS.md, HARNESS.html, configs/claude-mcp.json?",
@@ -444,6 +820,10 @@ def launch_menu(target: Path) -> None:
                 run_grill(target)
             elif chosen == "index":
                 run_index(target)
+            elif chosen == "rag-pack":
+                query = input("  Task/query for RAG pack: ").strip()
+                if query:
+                    run_rag_pack(target, query=query)
             elif chosen == "status":
                 run_status(target)
         except KeyboardInterrupt:
@@ -480,13 +860,28 @@ def main() -> int:
     p_eject = sub.add_parser("eject",   help="Remove harness config, keep data")
     p_eject.add_argument("--dry-run", action="store_true")
 
+    p_center = sub.add_parser("center", help="Get or set this project's preferred center")
+    center_sub = p_center.add_subparsers(dest="center_action", metavar="<get|set>", required=True)
+    p_center_get = center_sub.add_parser("get", help="Show this project's preferred center")
+    p_center_get.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_center_set = center_sub.add_parser("set", help="Set this project's preferred center")
+    p_center_set.add_argument("center_value", choices=["auto", "codex", "claude", "antigravity"])
+    p_center_set.add_argument("path", nargs="?", default=None, metavar="PATH")
+
+    p_rag = sub.add_parser("rag-pack", help="Build a shared RAG context pack for Codex, Claude, Antigravity, and local Ollama")
+    p_rag.add_argument("query", help="Task/query to retrieve context for")
+    p_rag.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_rag.add_argument("--center", choices=["project", "auto", "codex", "claude", "antigravity"], default="project")
+    p_rag.add_argument("--local-model", default=None)
+
     sub.add_parser("analyze", help="Print project profile JSON")
     sub.add_parser("grill",   help="Fill [CUSTOMIZE] section interactively")
     sub.add_parser("status",  help="Show harness state")
     sub.add_parser("index",   help="Build/rebuild semantic RAG index")
 
-    for p in sub.choices.values():
-        p.add_argument("path", nargs="?", default=None, metavar="PATH")
+    for name, p in sub.choices.items():
+        if name not in {"center", "rag-pack"}:
+            p.add_argument("path", nargs="?", default=None, metavar="PATH")
 
     args = parser.parse_args()
     target = _project_root(getattr(args, "path", None) or args.path if hasattr(args, "path") else None)
@@ -502,6 +897,10 @@ def main() -> int:
                         from_analysis=getattr(args, "from_analysis", None))
     if args.command == "eject":
         return run_eject(target, dry_run=args.dry_run)
+    if args.command == "center":
+        return run_center(target, action=args.center_action, value=getattr(args, "center_value", None))
+    if args.command == "rag-pack":
+        return run_rag_pack(target, query=args.query, center=args.center, local_model=args.local_model)
     if args.command == "analyze":
         return run_analyze(target)
     if args.command == "grill":
