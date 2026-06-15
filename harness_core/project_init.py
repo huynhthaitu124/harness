@@ -34,8 +34,19 @@ _HARNESS_BLOCK_START = "<!-- harness:start -->"
 _HARNESS_BLOCK_END   = "<!-- harness:end -->"
 
 
-def _harness_instruction_block(root: Path) -> str:
+def _harness_instruction_block(root: Path, harness_root: Path | None = None) -> str:
     """Return the mandatory harness block to inject into agent instruction files."""
+    schema_path = root / ".harness" / "mcp_schema.md"
+
+    # Generate compact Tier-1 table if harness_root is known and schema exists
+    tier1_block = ""
+    if harness_root is not None:
+        try:
+            from harness_core.mcp_schema import generate_compact_tier1_md
+            tier1_block = "\n\n" + generate_compact_tier1_md(harness_root, schema_path)
+        except Exception:
+            pass
+
     return f"""{_HARNESS_BLOCK_START}
 ## Harness — Mandatory First Step
 
@@ -57,10 +68,11 @@ For **every task, bug, or ticket** you receive in this project — regardless of
 
 Project root : `{root}`
 HARNESS.html : `{root}/HARNESS.html` (architecture, modules, conventions, ticket workflow)
+MCP schema   : `{schema_path}` (all tools, parameters, call order){tier1_block}
 {_HARNESS_BLOCK_END}"""
 
 
-def inject_agent_instructions(root: Path) -> list[str]:
+def inject_agent_instructions(root: Path, harness_root: Path | None = None) -> list[str]:
     """Write or update the mandatory harness block in CLAUDE.md, AGENTS.md, GEMINI.md.
 
     If the file already exists, replaces the block between the harness markers.
@@ -69,7 +81,7 @@ def inject_agent_instructions(root: Path) -> list[str]:
 
     Returns list of files that were written or updated.
     """
-    block   = _harness_instruction_block(root)
+    block   = _harness_instruction_block(root, harness_root)
     updated = []
 
     for filename in _AGENT_INSTRUCTION_FILES:
@@ -238,9 +250,17 @@ def init_project_full(
     _write(target_root / "HARNESS.md",
            render_harness_md(analysis, harness_root / "scripts", project_name))
 
+    # ── MCP schema doc (.harness/mcp_schema.md) ──────────────────────────────
+    if not dry_run:
+        from harness_core.mcp_schema import write_mcp_schema
+        schema_path = write_mcp_schema(target_root, harness_root)
+        created.append(str(schema_path))
+    else:
+        created.append(str(target_root / ".harness" / "mcp_schema.md"))
+
     # ── inject mandatory first-call rule into agent instruction files ─────────
     if not dry_run:
-        inject_agent_instructions(target_root)
+        inject_agent_instructions(target_root, harness_root)
 
     # ── register MCP server in agent config files ─────────────────────────────
     if not dry_run:

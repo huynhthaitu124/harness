@@ -885,6 +885,31 @@ def run_mcp(target: Path, action: str) -> int:
     if action == "status":
         status = mcp_registration_status(target, harness_root)
         print()
+
+        # Schema doc
+        schema_path = target / ".harness" / "mcp_schema.md"
+        if schema_path.exists():
+            lines = schema_path.read_text(encoding="utf-8").count("\n")
+            _row("MCP schema", f"{G}ready{R}  {DIM}{lines} lines → {schema_path}{R}")
+        else:
+            _row("MCP schema", f"{Y}missing{R}  — run:  harness mcp register")
+
+        # Agent instruction files
+        _AGENT_FILES = ["CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+        injected = [f for f in _AGENT_FILES
+                    if (target / f).exists()
+                    and "harness:start" in (target / f).read_text(encoding="utf-8", errors="ignore")]
+        has_schema_ref = [f for f in injected
+                          if "mcp_schema.md" in (target / f).read_text(encoding="utf-8", errors="ignore")]
+        if injected:
+            schema_ok = f"  {DIM}+schema ref{R}" if has_schema_ref else f"  {Y}(no schema ref — re-run register){R}"
+            _row("Agent rules", f"{G}injected{R}  {DIM}{', '.join(injected)}{R}{schema_ok}")
+        else:
+            _row("Agent rules", f"{Y}missing{R}  — run:  harness mcp register")
+
+        print()
+
+        # Config registration
         _labels = {
             "claude_project":      "Claude (project)",
             "antigravity_ide":     "Antigravity IDE",
@@ -907,6 +932,20 @@ def run_mcp(target: Path, action: str) -> int:
         return 0
 
     if action == "register":
+        # Regenerate schema doc first (agents read it from agent instruction files)
+        try:
+            from harness_core.mcp_schema import write_mcp_schema, generate_compact_tier1_md
+            schema_path = write_mcp_schema(target, harness_root)
+            _ok(f"schema → {schema_path}")
+        except Exception as exc:
+            _warn(f"schema generation failed: {exc}")
+
+        # Re-inject agent instruction files with updated schema block
+        from harness_core.project_init import inject_agent_instructions
+        updated = inject_agent_instructions(target, harness_root)
+        for f in updated:
+            _ok(f"agent rules → {f}")
+
         written = register_mcp_project(target, harness_root)
         written += register_mcp_global(harness_root)
         print()
@@ -916,7 +955,7 @@ def run_mcp(target: Path, action: str) -> int:
             print()
             _info("Restart your agent IDE / terminal session for the change to take effect.")
         else:
-            _warn("no files written — check permissions or re-run after installing agents")
+            _warn("no config files written — check permissions or re-run after installing agents")
         return 0
 
     if action == "unregister":
