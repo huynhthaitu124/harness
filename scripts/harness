@@ -231,6 +231,130 @@ def _pick_ollama_model_to_pull() -> None:
         _warn(f"pull failed for {chosen}")
 
 
+def _refine_workflow(
+    inferred: "dict | None",
+    target: Path,
+    agent_name: str,
+    analysis: dict,
+) -> "dict | None":
+    """Show inferred workflow summary, then let user accept / review / free-text."""
+    # ── display what was inferred ──────────────────────────────────────────────
+    print()
+    if inferred:
+        _ok("Workflow inferred from git history:")
+        _pairs = [
+            ("ticket_system",  inferred.get("ticket_system") or "—"),
+            ("ticket_url",     inferred.get("ticket_url") or "—"),
+            ("base_branch",    inferred.get("base_branch") or "—"),
+            ("branch_pattern", inferred.get("branch_pattern") or "—"),
+            ("build_cmd",      inferred.get("build_cmd") or "—"),
+        ]
+        for k, v in _pairs:
+            print(f"  {DIM}{k:<16}{R}  {v}")
+        rules = inferred.get("critical_rules") or []
+        if rules:
+            print(f"  {DIM}{'critical_rules':<16}{R}  {rules[0]}")
+            for r in rules[1:]:
+                print(f"  {DIM}{'':<16}{R}  {r}")
+    else:
+        _warn("No workflow could be inferred — starting from defaults")
+
+    # ── refinement menu ────────────────────────────────────────────────────────
+    print()
+    print(f"  {B}1{R}  Accept as-is")
+    print(f"  {B}2{R}  Review & edit each field")
+    print(f"  {B}3{R}  Describe in your own words → agent parses")
+    print(f"  {B}0{R}  Skip workflow")
+    print()
+    try:
+        choice = input(f"Choice [1]: ").strip() or "1"
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return inferred
+
+    if choice == "0":
+        _info("Skipping workflow section.")
+        return None
+
+    if choice == "1" or choice not in ("2", "3"):
+        return inferred  # accept
+
+    if choice == "2":
+        return _workflow_review_mode(inferred, target)
+
+    # choice == "3" — free text
+    return _workflow_freetext_mode(inferred, target, agent_name, analysis)
+
+
+def _workflow_review_mode(base: "dict | None", target: Path) -> "dict | None":
+    """Interactive field-by-field review with pre-filled values from inference."""
+    from harness_core.workflow_steps import WORKFLOW_GRILL_QUESTIONS, answers_to_workflow
+
+    # Build a lookup from the inferred workflow back to grill-key format
+    _field_map = {
+        "wf_ticket_system":  (base or {}).get("ticket_system", ""),
+        "wf_ticket_url":     (base or {}).get("ticket_url", ""),
+        "wf_base_branch":    (base or {}).get("base_branch", ""),
+        "wf_branch_pattern": (base or {}).get("branch_pattern", ""),
+        "wf_context_files":  ", ".join((base or {}).get("context_files", [])),
+        "wf_build_cmd":      (base or {}).get("build_cmd", ""),
+        "wf_critical_rules": "\\n".join((base or {}).get("critical_rules", [])),
+    }
+
+    print()
+    print(f"{DIM}Press Enter to keep the inferred value, or type to override.{R}\n")
+    answers: dict[str, str] = {}
+    for item in WORKFLOW_GRILL_QUESTIONS:
+        key     = item["key"]
+        current = _field_map.get(key, "")
+        hint    = f"  {DIM}[{current}]{R}" if current else ""
+        try:
+            raw = input(f"{item['q']}{hint}\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        answers[key] = raw if raw else current
+
+    return answers_to_workflow(answers) if any(v for v in answers.values()) else base
+
+
+def _workflow_freetext_mode(
+    base: "dict | None",
+    target: Path,
+    agent_name: str,
+    analysis: dict,
+) -> "dict | None":
+    """Let user describe workflow freely; agent extracts structured fields."""
+    print()
+    print(f"{DIM}Describe your ticket workflow in plain language. Examples:{R}")
+    print(f"{DIM}  'We use OpenProject at op.bigin.vn. Tickets like OP-123.{R}")
+    print(f"{DIM}   Branch from development as bug/OP-123. Build: msbuild PAGSWebRole.{R}")
+    print(f"{DIM}   Never commit directly to development.'{R}")
+    print()
+    try:
+        text = input("Your description:\n> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return base
+
+    if not text:
+        _warn("No description entered — keeping inferred values.")
+        return base
+
+    print()
+    _info(f"Sending to {B}{agent_name}{R} for parsing...")
+    try:
+        from harness_core.agent_research import research_workflow_from_text
+        result = research_workflow_from_text(target, agent_name, text, base)
+        if result:
+            return result
+        _warn("Agent could not parse description — keeping inferred values.")
+        return base
+    except Exception as exc:
+        _warn(f"Free-text parsing failed: {exc}")
+        return base
+
+
 def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
              from_analysis: str | None = None) -> int:
     from harness_core.project_init import analyze_project, init_project_full
@@ -287,22 +411,23 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
             _warn(f"agent research failed: {exc}")
             _info("continuing with standard sections")
 
-        # ── workflow inference from git history ────────────────────────────────
+        # ── workflow inference + user refinement ──────────────────────────────
         print()
-        _info(f"Inferring ticket workflow from git history + CI config...")
+        _info("Inferring ticket workflow from git history + CI config...")
+        inferred_wf: dict | None = None
         try:
             from harness_core.agent_research import research_workflow
-            from harness_core.workflow_steps import save_workflow
-            wf = research_workflow(target, research_agent, analysis)
-            if wf:
-                save_workflow(target, wf)
-                ts = wf.get("ticket_system") or "—"
-                bc = wf.get("build_cmd") or "—"
-                _ok(f"workflow saved  {DIM}ticket={ts}  build={bc}{R}")
-            else:
-                _warn("workflow inference returned nothing — skipping workflow section")
+            inferred_wf = research_workflow(target, research_agent, analysis)
         except Exception as exc:
             _warn(f"workflow inference failed: {exc}")
+
+        final_wf = _refine_workflow(inferred_wf, target, research_agent, analysis)
+        if final_wf:
+            from harness_core.workflow_steps import save_workflow
+            save_workflow(target, final_wf)
+            ts = final_wf.get("ticket_system") or "—"
+            bc = final_wf.get("build_cmd") or "—"
+            _ok(f"workflow saved  {DIM}ticket={ts}  build={bc}{R}")
 
     print()
     result = init_project_full(target, HARNESS_ROOT, analysis, dry_run=False, skip_index=skip_index,

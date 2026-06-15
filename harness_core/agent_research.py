@@ -795,6 +795,88 @@ def research_workflow(
     return answers_to_workflow(grill_answers)
 
 
+def research_workflow_from_text(
+    root: Path,
+    agent_name: str,
+    user_text: str,
+    base_workflow: "dict[str, Any] | None" = None,
+) -> "dict[str, Any] | None":
+    """Parse a free-text workflow description with the selected agent.
+
+    Merges the result with base_workflow (agent inference) so prior findings
+    are not lost — user's explicit text takes precedence over inferred values.
+    Returns a full workflow dict or None on failure.
+    """
+    import sys as _sys
+    from harness_core.workflow_steps import answers_to_workflow
+
+    base_ctx = ""
+    if base_workflow:
+        base_ctx = (
+            f"\nFor context, the agent previously inferred these values from git history "
+            f"(use them as a starting point and override with what the user described):\n"
+            f"  ticket_system:  {base_workflow.get('ticket_system', '')}\n"
+            f"  ticket_url:     {base_workflow.get('ticket_url', '')}\n"
+            f"  base_branch:    {base_workflow.get('base_branch', '')}\n"
+            f"  branch_pattern: {base_workflow.get('branch_pattern', '')}\n"
+            f"  build_cmd:      {base_workflow.get('build_cmd', '')}\n"
+            f"  critical_rules: {base_workflow.get('critical_rules', [])}\n"
+        )
+
+    prompt = (
+        f"The developer described their project workflow as follows:\n"
+        f"\n"
+        f"\"{user_text}\"\n"
+        f"{base_ctx}\n"
+        f"Extract workflow fields from the description above and fill in this JSON template.\n"
+        f"If the description doesn't mention a field, use an empty string (or the inferred value).\n"
+        f"Respond with only the completed JSON:\n"
+        f"\n"
+        f"{_WORKFLOW_SCHEMA}\n"
+    )
+
+    raw: str | None = None
+    if agent_name == "claude":
+        raw = _invoke_claude(root, prompt)
+    elif agent_name == "codex":
+        raw = _invoke_codex(root, prompt)
+    elif agent_name == "antigravity":
+        raw = _invoke_antigravity(root, prompt)
+    elif agent_name.startswith("ollama:"):
+        raw = _invoke_ollama(agent_name[len("ollama:"):], prompt)
+
+    if not raw:
+        return None
+
+    parsed = _parse_workflow_json(raw)
+    if parsed is None:
+        preview = raw[:200].replace("\n", " ")
+        _sys.stdout.write(f"  ! workflow JSON parse failed. Preview: {preview!r}\n")
+        _sys.stdout.flush()
+        return None
+
+    # Merge: prefer explicit user values, fall back to inferred
+    if base_workflow:
+        for field in ("ticket_system", "ticket_url", "base_branch", "branch_pattern", "build_cmd"):
+            if not parsed.get(field) and base_workflow.get(field):
+                parsed[field] = base_workflow[field]
+        if not parsed.get("critical_rules") and base_workflow.get("critical_rules"):
+            parsed["critical_rules"] = base_workflow["critical_rules"]
+        if not parsed.get("context_files") and base_workflow.get("context_files"):
+            parsed["context_files"] = base_workflow["context_files"]
+
+    grill_answers = {
+        "wf_ticket_system":  parsed.get("ticket_system", ""),
+        "wf_ticket_url":     parsed.get("ticket_url", ""),
+        "wf_base_branch":    parsed.get("base_branch", ""),
+        "wf_branch_pattern": parsed.get("branch_pattern", ""),
+        "wf_context_files":  ", ".join(parsed.get("context_files", [])),
+        "wf_build_cmd":      parsed.get("build_cmd", ""),
+        "wf_critical_rules": "\\n".join(parsed.get("critical_rules", [])),
+    }
+    return answers_to_workflow(grill_answers)
+
+
 # ── Persistence ───────────────────────────────────────────────────────────────
 
 def save_research(root: Path, data: dict[str, Any]) -> Path:
