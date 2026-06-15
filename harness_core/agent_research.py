@@ -103,33 +103,47 @@ def detect_agent_clis() -> list[dict[str, Any]]:
     # ── Codex CLI ─────────────────────────────────────────────────────────────
     codex_path = shutil.which("codex")
     codex_inst = bool(codex_path)
-    # Codex auth = OPENAI_API_KEY is set
-    import os as _os
-    codex_auth = bool(_os.environ.get("OPENAI_API_KEY"))
+    # Auth via OAuth (ChatGPT account) — detect with `codex login status`
+    codex_auth = False
+    if codex_inst:
+        try:
+            _cr = subprocess.run(
+                ["codex", "login", "status"],
+                capture_output=True, text=True, timeout=8,
+            )
+            out = (_cr.stdout + _cr.stderr).lower()
+            codex_auth = _cr.returncode == 0 and ("logged in" in out or "chatgpt" in out or "openai" in out)
+        except Exception:
+            codex_auth = False
+    codex_version = ""
+    if codex_inst:
+        try:
+            _cvr = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=5)
+            codex_version = (_cvr.stdout + _cvr.stderr).strip().split("\n")[0][:40]
+        except Exception:
+            pass
     agents.append({
-        "name":        "codex",
-        "label":       "Codex (OpenAI)",
-        "available":   codex_inst and codex_auth,
-        "installed":   codex_inst,
-        "authed":      codex_auth,
-        "detail":      (codex_path if codex_inst and codex_auth
-                        else ("installed — set OPENAI_API_KEY" if codex_inst
-                              else ("npm i -g @openai/codex" if npm_ok
-                                    else "requires Node/npm"))),
-        "model":       None,
-        "install_how": "npm" if npm_ok else None,
-        "install_pkg": "@openai/codex",
-        "auth_cmd":      None,
-        "auth_url":      "https://platform.openai.com/api-keys",
-        "auth_note":     "Create an API key at platform.openai.com, then add to your shell:\n"
-                         "export OPENAI_API_KEY=sk-...\n"
-                         "Add to ~/.zshrc or ~/.bashrc to persist across sessions.",
+        "name":          "codex",
+        "label":         "Codex CLI (OpenAI)",
+        "available":     codex_inst and codex_auth,
+        "installed":     codex_inst,
+        "authed":        codex_auth,
+        "detail":        (codex_version or codex_path or "ready") if codex_inst and codex_auth
+                         else ("installed — run: codex login" if codex_inst
+                               else ("npm i -g @openai/codex" if npm_ok
+                                     else "requires Node/npm")),
+        "model":         None,
+        "install_how":   "npm" if npm_ok else None,
+        "install_pkg":   "@openai/codex",
+        "auth_cmd":      ["codex", "login", "--device-auth"],
+        "auth_url":      "https://chatgpt.com",
+        "auth_note":     "Sign in with your ChatGPT / OpenAI account.\n"
+                         "Your browser will open — log in and the token is stored automatically.",
         "docs_url":      "https://github.com/openai/codex-cli",
         "install_steps": [
             "npm install -g @openai/codex",
-            "# Get API key at https://platform.openai.com/api-keys",
-            "export OPENAI_API_KEY=sk-...  # add to ~/.zshrc to persist",
-            "codex --version  # verify",
+            "codex login --device-auth  # browser redirect — sign in with ChatGPT",
+            "codex login status  # verify",
         ],
     })
 
@@ -168,11 +182,12 @@ def detect_agent_clis() -> list[dict[str, Any]]:
         "install_pkg":   None,
         "auth_cmd":      ["antigravity", "auth", "login"],
         "auth_url":      "https://antigravity.google/download#antigravity-cli",
-        "auth_note":     "Sign in with your Google account to authorise Antigravity CLI.",
+        "auth_note":     "Sign in with your Google account.\n"
+                         "Your browser will open for OAuth — log in and the token is stored automatically.",
         "docs_url":      "https://antigravity.google/download#antigravity-cli",
         "install_steps": [
             "# Download from https://antigravity.google/download#antigravity-cli",
-            "antigravity auth login  # opens browser — sign in with Google",
+            "antigravity auth login  # browser redirect — sign in with Google",
             "antigravity --version  # verify",
         ],
     })

@@ -357,49 +357,38 @@ def _workflow_freetext_mode(
 
 
 def _codex_auth_flow() -> bool:
-    """Prompt for OPENAI_API_KEY, persist to ~/.zshrc, return True if key was set."""
-    from harness_core.tui import prompt_input
-    import os as _os
+    """OAuth browser redirect login for Codex — uses ChatGPT account, no API key needed."""
+    import subprocess as _sp
 
-    _info("Codex needs an OpenAI API key.")
-    _info(f"  Get one at:  {B}https://platform.openai.com/api-keys{R}")
-    try:
-        import subprocess as _sp
-        _sp.run(["open", "https://platform.openai.com/api-keys"], check=False)
-        _info("Opened API key page in your browser.")
-    except Exception:
-        pass
+    _info("Codex login — sign in with your ChatGPT / OpenAI account.")
+    _info(f"{DIM}Your browser will open for OAuth — log in and you're done.{R}")
     print()
-    api_key = prompt_input("  Paste OPENAI_API_KEY here (esc to skip) › ")
-    if not api_key:
-        _info("Skipped — add manually:  export OPENAI_API_KEY=sk-...")
+    _info(f"Running:  {B}codex login --device-auth{R}")
+    print()
+    try:
+        result = _sp.run(["codex", "login", "--device-auth"], check=False)
+        if result.returncode != 0:
+            _warn("Login did not complete — run manually: codex login --device-auth")
+            return False
+    except FileNotFoundError:
+        _warn("codex not found — install first: npm install -g @openai/codex")
+        return False
+    except Exception as exc:
+        _warn(f"Login failed: {exc}")
         return False
 
-    api_key = api_key.strip()
-    _os.environ["OPENAI_API_KEY"] = api_key  # active for this session immediately
+    # Verify token was stored
+    try:
+        chk = _sp.run(["codex", "login", "status"], capture_output=True, text=True, timeout=8)
+        out = (chk.stdout + chk.stderr).lower()
+        if "logged in" in out or "chatgpt" in out or "openai" in out:
+            _ok("Codex logged in")
+            return True
+    except Exception:
+        pass
 
-    zshrc  = Path.home() / ".zshrc"
-    bashrc = Path.home() / ".bashrc"
-    marker = "OPENAI_API_KEY"
-
-    for rc_file in (zshrc, bashrc):
-        if rc_file.exists():
-            try:
-                existing = rc_file.read_text(encoding="utf-8")
-                if marker not in existing:
-                    with rc_file.open("a", encoding="utf-8") as f:
-                        f.write(f'\nexport OPENAI_API_KEY="{api_key}"  # added by harness agents\n')
-                    _ok(f"API key written to {rc_file.name}")
-                else:
-                    _info(f"{marker} already in {rc_file.name} — updated env for this session only")
-            except OSError:
-                _warn(f"Could not write to {rc_file}")
-            break
-    else:
-        _warn("No ~/.zshrc or ~/.bashrc found — key is set for this session only")
-
-    _ok("OPENAI_API_KEY set")
-    return True
+    _warn("Could not confirm — run: codex login status")
+    return False
 
 
 def run_agents_cmd(target: Path) -> int:  # noqa: C901
@@ -1719,6 +1708,15 @@ def run_mcp(target: Path, action: str) -> int:
         mcp_registration_status, register_mcp_project, register_mcp_global, unregister_mcp,
     )
 
+    if action == "security":
+        from harness_core.mcp_security import audit_mcp_security
+        from harness_mcp.server import TOOLS
+
+        server_text = (HARNESS_ROOT / "harness_mcp" / "server.py").read_text(encoding="utf-8")
+        report = audit_mcp_security(server_text=server_text, tools=TOOLS)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0 if report["verdict"] == "PASS" else 1
+
     project_json = target / ".harness" / "project.json"
     if not project_json.exists():
         _warn("not initialized — run  harness init  first")
@@ -1809,15 +1807,6 @@ def run_mcp(target: Path, action: str) -> int:
         else:
             _info("harness was not registered in any config files")
         return 0
-
-    if action == "security":
-        from harness_core.mcp_security import audit_mcp_security
-        from harness_mcp.server import TOOLS
-
-        server_text = (harness_root / "harness_mcp" / "server.py").read_text(encoding="utf-8")
-        report = audit_mcp_security(server_text=server_text, tools=TOOLS)
-        print(json.dumps(report, indent=2, ensure_ascii=False))
-        return 0 if report["verdict"] == "PASS" else 1
 
     print(f"unknown mcp action: {action}", file=sys.stderr)
     return 1
