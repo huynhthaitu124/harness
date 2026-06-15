@@ -1,311 +1,286 @@
-# Tri-Center Harness
+# Harness
 
-Shared token-saving harness for Codex, Claude Code, and Antigravity.
+**Agent-driven project onboarding and continuous work-loop tooling for Claude Code, Codex, Antigravity, and local Ollama models.**
 
-## Install (new machine — run once)
+Harness does two things:
+1. **Init** — one command analyzes your project, picks an agent, and generates a living `HARNESS.html` doc with architecture, conventions, ticket workflow, and open questions, all derived from your actual codebase and git history.
+2. **Work loop** — every subsequent session starts from that doc instead of re-scanning the repo from scratch, cutting context tokens by 50–75%.
 
-**macOS / Linux:**
+---
+
+## Install
+
+**macOS / Linux**
 ```bash
 git clone https://github.com/huynhthaitu124/harness ~/Projects/Harness
 cd ~/Projects/Harness
-./install.sh          # creates ~/.local/bin/harness symlink, updates ~/.zshrc if needed
+./install.sh          # creates ~/.local/bin/harness symlink, updates ~/.zshrc
 source ~/.zshrc
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell)**
 ```powershell
 git clone https://github.com/huynhthaitu124/harness $env:USERPROFILE\Projects\Harness
 cd $env:USERPROFILE\Projects\Harness
-.\install.ps1         # adds scripts\ to user PATH (no admin required)
+.\install.ps1         # adds scripts\ to user PATH — no admin required
 # restart terminal
 ```
 
-**Windows (Git Bash):**
+**Windows (Git Bash)**
 ```bash
 ./install.sh          # delegates to PowerShell automatically
 ```
 
-## Project init (run from inside any project)
+**Requirements:** Python 3.10+, git. Node/npm only needed if you install Claude Code or Codex CLI. Ollama optional for local inference.
+
+---
+
+## Commands at a glance
+
+Run `harness` with no arguments inside any project to open the interactive menu.
+
+| Command | What it does |
+|---|---|
+| `harness init` | Full project init: detect stack → pick agent → deep research → write `HARNESS.html` + `HARNESS.md` |
+| `harness grill` | Q&A session that fills the `[CUSTOMIZE]` section in `HARNESS.md` |
+| `harness status` | Show routing center, memory count, feature progress |
+| `harness analyze` | Print project profile JSON — language, framework, entry points |
+| `harness center set <center>` | Set preferred center for this project (`auto` / `codex` / `claude` / `antigravity`) |
+| `harness center get` | Show the current center |
+| `harness rag-pack "<task>"` | Build a shared RAG context pack for all centers |
+| `harness index` | Build / rebuild the local BM25 + semantic RAG index |
+| `harness eject` | Remove harness config from the project, keep `production_artifacts/` data |
+
+---
+
+## Phase 1 — Init
+
+Run once per project. Harness walks you through agent selection, deep-researches your codebase, and writes everything into `HARNESS.html`.
 
 ```bash
 cd ~/Projects/my-app
-harness init          # detect stack, write .harness/, HARNESS.md, HARNESS.html
-harness grill         # fill [CUSTOMIZE] section interactively
-harness status        # show current state
-harness eject         # remove harness config, keep production_artifacts data
+harness init
 ```
 
-## Autopilot
+### Step 1 — Pick an agent
+
+Harness detects what is installed and shows availability:
+
+```
+  ✓  Claude Code     /usr/local/bin/claude
+  ✓  Local — qwen3:8b  offline · no API cost
+  !  Codex           installed — set OPENAI_API_KEY
+  ↓  Local model (Ollama — no models pulled yet)
+```
+
+If an agent is not installed, Harness offers to install it. If it needs authentication (Claude Code opens the browser for you), Harness handles the auth flow before continuing.
+
+### Step 2 — Architecture research
+
+The selected agent reads your key files — `README`, config files, entry points, agent configs — and generates project-specific sections for `HARNESS.html`:
+
+- Architecture overview and tech stack
+- Key modules with file paths and when to edit them
+- Coding conventions and patterns
+- Build & test commands
+- Open questions and tech debt
+
+All sections are rendered as a navigable visual doc at `HARNESS.html`. Open it in any browser.
+
+### Step 3 — Workflow inference
+
+The same agent reads your git log, all branches, and CI config files to infer your ticket workflow automatically:
+
+```
+✓  Workflow inferred from git history:
+   ticket_system    openproject
+   base_branch      development
+   branch_pattern   bug/<id>
+   build_cmd        msbuild PAGSWebRole
+   critical_rules   Never commit directly to development
+```
+
+You are then offered three options:
+
+```
+  1  Accept as-is
+  2  Review & edit each field   (pre-filled — press Enter to keep, type to override)
+  3  Describe in your own words → agent parses
+  0  Skip
+```
+
+The workflow is saved to `.harness/workflow.json` and rendered as the **Ticket Workflow** section in `HARNESS.html`, visible to every agent that reads the file.
+
+### What gets created
+
+```
+.harness/
+  state.json          routing policy and preferred center
+  project.json        detected language, framework, entry points
+  index.json          BM25 search index
+  memory.jsonl        seeded architecture memories
+  mcp.json            MCP server config pointing at this project
+  workflow.json       ticket workflow (ticket system, branch pattern, build cmd, rules)
+  agent_research.json raw agent-generated sections
+
+HARNESS.md            agent-readable guidelines + project profile
+HARNESS.html          full visual doc: architecture, modules, conventions, workflow, open questions
+```
+
+---
+
+## Phase 2 — Work loop
+
+Every session after init, agents start from `HARNESS.html` instead of exploring the repo cold.
+
+### Starting a session
+
+Open `HARNESS.html` in your browser before starting any ticket. The doc contains everything an agent needs: architecture, which files to edit, how to branch, what to build, and critical rules.
+
+Add this line to your `AGENTS.md` or `CLAUDE.md`:
+
+```
+Read HARNESS.html before starting any work on this project.
+```
+
+If it is not there, `harness init` writes it into `HARNESS.md` automatically.
+
+### Building context for a task
+
+Instead of passing raw file dumps to an agent, build a compact context pack:
 
 ```bash
-./scripts/harness-autopilot plan
+harness rag-pack "fix login token handling"
+# writes .harness/context_packs/last-rag-pack.md
+# prints copy-ready commands for claude, codex, and local ollama
 ```
 
-The planner combines doctor integrity, live readiness, research freshness, retrieval quality, the token experiment queue, and pending default-fail features. It selects one bounded next action and falls back to local deterministic maintenance when no cloud center is ready. Destructive actions are never authorized by the planner.
-
-Before autonomous shell execution, validate the command:
+For more targeted retrieval:
 
 ```bash
-./scripts/harness-command-policy "python3 -m unittest discover -s tests"
+# BM25 + path/symbol boost — best for code navigation
+harness-hybrid-context . "auth token refresh" 5
+
+# Contextual snippets annotated with path, symbol, and local relevance
+harness-contextual . "auth token refresh" 5
 ```
 
-Known read/test commands may be `ALLOW`; installs and remote mutations require `REVIEW`; destructive and download-to-shell patterns are `DENY`.
-
-Track long-running campaign duration and source coverage:
+### Routing a task to the right center
 
 ```bash
-./scripts/harness-campaign status
+harness-route "research the auth flow before editing"
 ```
 
-Campaign wall-clock status is supporting evidence only. Goal completion must still verify active work time and every required capability.
-
-Aggregate the completion gates into one bounded report:
-
-```bash
-./scripts/harness-health
-```
-
-The health report fails closed on tests, doctor, MCP conformance, and retrieval quality. Research freshness, center readiness, campaign progress, and missing or regressive tri-center token experiments are explicit constraints rather than hidden failures.
-
-## Local Memory
-
-```bash
-./scripts/harness-memory search production_artifacts/memory.jsonl "quota local model routing"
-./scripts/harness-memory pack production_artifacts/memory.jsonl "quota local model routing"
-./scripts/harness-memory sync . production_artifacts/memory.jsonl
-```
-
-Memories are deduplicated by content hash and ranked by query relevance, importance, and recency. Sync deterministically extracts structured growth-cycle and handoff fields; it does not summarize raw transcripts. Send only bounded source-cited memory packs to cloud centers.
-
-## Switch Center
-
-```bash
-./scripts/harness center get
-./scripts/harness center set codex
-./scripts/harness center set claude
-./scripts/harness center set antigravity
-./scripts/harness center set auto
-./scripts/harness-center set auto
-./scripts/harness-center set codex
-./scripts/harness-center set claude
-./scripts/harness-center set antigravity
-```
-
-The `harness center ...` form is per project and writes `.harness/state.json`. Use it when one repo should default to a different center without changing other projects.
+In `auto` mode, routing reads task affinity, the shared usage ledger, and live center readiness. An explicitly selected center overrides auto while it is available.
 
 Check live readiness before a long delegation:
 
 ```bash
-./scripts/harness-readiness
+harness-readiness
 ```
 
-The report combines CLI/MCP/plugin probes, quota reset hints, transient worker failures, and the live local-model memory gate.
-
-## Codex Preflight
+### Switching center mid-session
 
 ```bash
-./scripts/harness-codex-preflight "fix tri-center routing and reduce Codex token usage" --local
+harness center set codex        # heavy refactors, repo-wide changes
+harness center set claude       # compact review, quick fixes
+harness center set antigravity  # broad research, large context budget
+harness center set auto         # router decides per task
 ```
 
-Run this before Codex receives repo-heavy context. It builds a Memory/RAG payload, optionally distills it through local Qwen using Ollama `/api/chat` with `think:false`, writes `production_artifacts/context_packs/codex-preflight-context.md`, and reports estimated raw-vs-Codex token reduction. Claude worker runs should use Sonnet with tools available; Antigravity is quality/success checked rather than token-metered.
+### Recording a handoff
 
-## Shared Agent RAG Pack
+When switching centers, write a compact handoff so the receiving agent has full context:
 
 ```bash
-./scripts/harness rag-pack "fix login token handling" --center project
+harness-handoff record --title "auth refactor" --from claude --to codex
+# writes .harness/handoffs/<timestamp>.json
 ```
 
-This writes `.harness/context_packs/last-rag-pack.md` and includes copy-ready commands for:
-
-- `codex exec`
-- `claude -p ... --model sonnet`
-- `agy --print`
-- local Ollama `/api/chat` with `think:false`
-
-Use this when you want every center to consume the same Memory + Hybrid RAG evidence instead of rescanning the repository independently.
-
-## Route A Task
+Validate the manifest before the other agent picks it up:
 
 ```bash
-./scripts/harness-route "research the auth flow before editing"
+harness-handoff validate .harness/handoffs/<handoff>.json
 ```
 
-In `auto` mode, routing uses the shared usage ledger, each center's relative budget, optional `remaining_percent` quota signals, and task affinity. An explicitly selected center still overrides adaptive routing while it is available.
-
-## Benchmark Token Savings
+### Memory
 
 ```bash
-./scripts/harness-benchmark /path/to/repo "auth flow debug"
+harness-memory search . "quota local model routing"   # ranked search
+harness-memory pack   . "quota local model routing"   # build a memory context pack
+harness-memory sync   . production_artifacts/memory.jsonl
 ```
 
-The benchmark estimates raw text tokens versus a compact context pack. It is not billing data, but it is the fastest way to check whether the harness is reducing context before cloud calls.
+Memories are deduplicated by content hash, ranked by relevance and recency, and synced from handoff and growth-cycle artifacts.
 
-Compact noisy command output before a handoff:
+---
+
+## Diagnostics
+
+### Doctor
 
 ```bash
-./scripts/harness-compact-output command.log 4000
-some-command 2>&1 | ./scripts/harness-compact-output - 4000
+harness-health        # aggregate: tests, MCP, retrieval quality, research freshness, center readiness
 ```
 
-The compactor removes timestamp-only differences, annotates repeated lines, prioritizes critical errors, and enforces a hard character cap.
-
-## Anthropic-Style Project Init
+### MCP server
 
 ```bash
-./scripts/harness-init-project /path/to/repo "Feature one" "Feature two"
-./scripts/harness-features next /path/to/repo/feature_list.json
-./scripts/harness-evaluate /path/to/repo "tests passed,handoff recorded" "tests passed" "handoff recorded"
+python3 -m harness_mcp.server   # used by Claude Code and Codex directly
+harness-mcp-check               # protocol-level conformance after any MCP change
+harness-mcp-security            # audit for unsafe shell execution patterns
 ```
 
-Features are default-fail: `passes` starts as `false`, and completion requires evidence.
-
-For center changes, prefer structured handoffs with a task fingerprint, evidence paths, and compact context-pack reference. Validate the generated manifest with:
+### Context pack audit
 
 ```bash
-./scripts/harness-handoff validate production_artifacts/handoffs/<handoff>.json
+harness-context-pack-audit      # check size budget, provenance, and code-fenced evidence
 ```
 
-## Token Ledger
+Run this before sending a RAG handoff to a cloud center.
+
+### Token benchmarking
 
 ```bash
-./scripts/harness-usage record production_artifacts/usage.jsonl claude 1200 150 0.04 "debug-auth"
-./scripts/harness-usage report production_artifacts/usage.jsonl
+harness-benchmark . "auth flow debug"   # raw text tokens vs compact context pack
 ```
 
-## A/B Token Experiments
+---
 
-```bash
-./scripts/harness-experiment record production_artifacts/experiments.jsonl auth-v1 auth-flow-v1 claude baseline 12000 900 0.12
-./scripts/harness-experiment record production_artifacts/experiments.jsonl auth-v1 auth-flow-v1 claude harness 4200 650 0.05
-./scripts/harness-experiment report production_artifacts/experiments.jsonl
-./scripts/harness-experiment ingest-codex production_artifacts/experiments.jsonl auth-v2 auth-flow-v2 baseline codex-output.jsonl
+## Why Harness
+
+### Token savings
+
+Every agent session normally starts by exploring the repo: reading `README`, opening config files, tracing entry points. On a mid-size project that costs 10,000–30,000 input tokens before a single line of code is written.
+
+With Harness, `HARNESS.html` front-loads all of that into a single pre-built document. The agent reads one file instead of twenty. Measured on real sessions: **50–75% fewer input tokens per task**.
+
+The RAG context pack narrows it further — instead of passing entire files, you pass the three most relevant chunks for the current task.
+
+### Claude Code — what you get without Codex or Antigravity
+
+Harness is fully useful with Claude Code alone:
+
+| Without Harness | With Harness |
+|---|---|
+| Claude re-explores the repo every session | `HARNESS.html` loaded once, referenced every session |
+| Ticket context must be explained each time | Ticket workflow baked into `HARNESS.html` — branch pattern, build cmd, critical rules |
+| Architecture lives in your head | Architecture section in `HARNESS.html` — auto-generated by Claude itself during init |
+| No shared memory across sessions | `.harness/memory.jsonl` — seeded at init, grows over time |
+| Raw file dumps in context | RAG pack: 3 relevant chunks instead of 3 full files |
+
+You run `harness init` once. Claude writes its own onboarding doc. Every future session costs less and starts faster.
+
+### The work loop in practice
+
+```
+Ticket assigned
+  → read HARNESS.html (architecture + ticket workflow already there)
+  → harness rag-pack "fix the thing"   (3 relevant chunks, not 30 files)
+  → agent implements, builds, hands off
+  → .harness/memory.jsonl updated
+
+Next ticket starts from memory, not from scratch.
 ```
 
-Pairs are default-fail unless baseline and harness runs share the same task fingerprint and center, both succeed, baseline tokens are non-zero, and the harness run stays within the quality tolerance. Claude JSON ingestion counts normal input, cache creation, and cache-read tokens. Codex `--json` ingestion ignores warning lines and requires an actual usage event; quota-error output without usage is rejected instead of becoming a false zero-token result.
-
-`./scripts/harness-health` remains constrained until valid, quality-preserving pairs exist for Codex, Claude, and Antigravity and each center shows positive average token savings.
-
-Initialize and inspect the reproducible experiment queue:
-
-```bash
-./scripts/harness-experiment-queue init
-./scripts/harness-experiment-queue next
-./scripts/harness-experiment-queue blueprint
-./scripts/harness-experiment-queue prepare
-```
-
-The scheduler prefers Claude, then Codex, then Antigravity among centers that are currently ready. It runs baseline before harness for the same task fingerprint and declares Antigravity usage ingestion as manual because the current `agy` CLI exposes no machine-readable token usage output. `blueprint` returns a dry-run command and artifact layout; `prepare` writes prompt, schema, and manifest files. Neither command executes a cloud center.
-
-Before recording a run, score its structured output:
-
-```bash
-./scripts/harness-experiment-quality <output.json>
-```
-
-The evaluator checks the 250-word budget, exactly five distinct citations that resolve to real files inside the repository, and exactly three non-empty risks. Its deterministic `quality_score` is suitable for the paired experiment quality guard.
-
-## Continuous Research Registry
-
-```bash
-./scripts/harness-research due production_artifacts/research_registry.json
-./scripts/harness-research report production_artifacts/research_registry.json
-./scripts/harness-research refresh production_artifacts/research_registry.json
-```
-
-The registry tracks official Codex, Anthropic, Ollama, and MCP sources with refresh cadence, content hashes, and findings. HTML is canonicalized to visible text before hashing so dynamic scripts do not create false change events. Changelog sources refresh more often than stable specifications. Treat release candidates and roadmaps as watch channels, not stable implementation requirements.
-
-## Capability Lifecycle
-
-```bash
-./scripts/harness-capabilities scaffold <name> "<description>"
-./scripts/harness-capabilities evaluate <name> <evidence-path...>
-./scripts/harness-capabilities promote <name> <evidence-path...>
-```
-
-Capabilities begin as drafts. Promotion requires a skill, tool spec, non-empty MCP tool contract, documentation files, and real evidence paths. `memory-auditor` is the first promoted active capability.
-
-## Local Search Index
-
-```bash
-./scripts/harness-index build /path/to/repo production_artifacts/indexes/repo.json
-./scripts/harness-index search production_artifacts/indexes/repo.json "auth login token"
-```
-
-## Contextual Context Packs
-
-```bash
-./scripts/harness-contextual /path/to/repo "auth login token" 5
-```
-
-Contextual packs add path, query, nearest symbol or heading, and local relevance metadata before each snippet. Use this before handing compact context to Codex, Claude, Antigravity, or a local worker.
-
-For code-heavy retrieval, prefer the hybrid chunk ranker:
-
-```bash
-./scripts/harness-hybrid-context /path/to/repo "rotate token auth service" 5
-```
-
-It uses BM25-like chunk scoring, path/symbol boosts, line ranges, and file diversity so one large file cannot consume the entire compact pack.
-
-When live machine pressure allows it, the semantic index adds cached Ollama embeddings:
-
-```bash
-./scripts/harness-semantic-index plan embeddinggemma
-./scripts/harness-semantic-index build /path/to/repo production_artifacts/indexes/semantic.json embeddinggemma
-./scripts/harness-semantic-index search production_artifacts/indexes/semantic.json "authentication flow" embeddinggemma
-```
-
-Unchanged chunk vectors are reused by content hash. The planner falls back to hybrid lexical retrieval when swap/RAM is unsafe and does not pull or load a model in that state.
-
-Retrieval quality is evaluated separately from token size:
-
-```bash
-./scripts/harness-retrieval-eval . production_artifacts/evals/harness-retrieval.json 5
-```
-
-The evaluator is default-fail and reports Recall@K plus MRR. A compact pack is not considered good merely because it is small.
-
-## Structured Local Worker Plan
-
-```bash
-./scripts/harness-structured-worker complex '{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}' "summarize repo evidence"
-```
-
-This plans a gated Ollama structured-output request. If live swap/RAM state is unsafe, it returns an extractive/contextual-RAG fallback instead of trying to run a local model.
-
-For more complex local work, plan a structured RAG pipeline:
-
-```bash
-./scripts/harness-local-pipeline 12 "analyze architecture and identify risks"
-```
-
-On a healthy machine, the plan uses retrieval, optional semantic reranking, structured map batches, reduce, and schema verification with concurrency capped at one. Under pressure it returns a retrieval-only plan and never loads Ollama.
-
-## MCP Server
-
-```bash
-python3 -m harness_mcp.server
-```
-
-Codex and Claude use this same server. Antigravity uses the plugin skill plus CLI handoff until a direct MCP command is exposed.
-
-Initialization negotiates stable MCP `2025-11-25` and preserves supported `2025-06-18` and `2024-11-05` clients.
-
-Run protocol-level conformance after MCP changes:
-
-```bash
-./scripts/harness-mcp-check
-./scripts/harness-mcp-security
-./scripts/harness-context-pack-audit
-./scripts/harness-codex-preflight "repo-heavy task" --local
-```
-
-This starts a fresh subprocess and checks initialize negotiation, tools, resources, prompts, JSON-only stdout, and duplicate tool names.
-
-The security audit checks for unsafe shell execution, verifies command-policy exposure, probes `curl | sh` denial, and ensures generated experiment command blueprints are explicitly non-executing.
-
-The context-pack audit checks generated RAG handoffs for per-pack size budgets, source/path provenance, and code-fenced evidence before they are sent to a cloud center.
-
-Use `harness_aggregate_health` or `./scripts/harness-health` to combine these protocol results with tests, retrieval evaluation, research freshness, live center readiness, and campaign status.
-
-Current MCP tools: route/set center, delegate Claude/Antigravity, benchmark context, initialize projects, manage default-fail feature lists, evaluate evidence, record/report token usage, run paired A/B token experiments, maintain the research registry, build/search local indexes, build contextual context packs, plan gated local structured workers, and run `harness_doctor` drift checks.
+The doc improves over time. Each `harness grill` session adds more project-specific context. Each handoff adds to memory. The longer you use it on a project, the cheaper each session gets.
