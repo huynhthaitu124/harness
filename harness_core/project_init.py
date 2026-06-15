@@ -27,6 +27,7 @@ from harness_core.search_index import build_index
 _AGENT_INSTRUCTION_FILES = [
     "CLAUDE.md",   # Claude Code
     "AGENTS.md",   # Codex
+    "CODEX.md",    # Codex (alternative name)
     "GEMINI.md",   # Antigravity / Gemini CLI
 ]
 
@@ -36,71 +37,45 @@ _HARNESS_BLOCK_END   = "<!-- harness:end -->"
 
 def _harness_instruction_block(root: Path, harness_root: Path | None = None) -> str:
     """Return the mandatory harness block to inject into agent instruction files."""
-    schema_path = root / ".harness" / "mcp_schema.md"
-
-    # Generate compact Tier-1 table if harness_root is known and schema exists
-    tier1_block = ""
-    if harness_root is not None:
-        try:
-            from harness_core.mcp_schema import generate_compact_tier1_md
-            tier1_block = "\n\n" + generate_compact_tier1_md(harness_root, schema_path)
-        except Exception:
-            pass
-
+    harness_md = root / "HARNESS.md"
     return f"""{_HARNESS_BLOCK_START}
-## Harness — Mandatory First Step
+## Harness
 
-For **every task, bug, or ticket** you receive in this project — regardless of how it arrives:
+For every task in this project — call `harness_ticket_context` first (MCP), or
+run `harness rag-pack "<task>"` if MCP is unavailable.  Never `grep`/`find`/`read_file`
+source files before loading Harness context.
 
-1. **First tool call** must be `harness_ticket_context` (MCP):
-   - `root`: `{root}`
-   - `task`: the user's message or ticket description verbatim
-
-2. **If MCP is unavailable**, run this CLI command first:
-   ```bash
-   harness rag-pack "<task description>" [--ticket <id>]
-   ```
-   Then read `.harness/context_packs/last-rag-pack.md` before opening any source file.
-
-3. **Never** call `list_dir`, `read_file`, `grep_search`, `find`, or any file-reading tool
-   on source code until you have the Harness context pack. The pack tells you exactly
-   which files to open — cold exploration wastes tokens and misses conventions.
-
-Project root : `{root}`
-HARNESS.html : `{root}/HARNESS.html` (architecture, modules, conventions, ticket workflow)
-MCP schema   : `{schema_path}` (all tools, parameters, call order){tier1_block}
+- Project root : `{root}`
+- Rules + tools: `{harness_md}` (mandatory first-step rule, Tier-1 MCP table)
+- Full docs    : `{root}/HARNESS.html` (architecture, modules, conventions, tickets)
 {_HARNESS_BLOCK_END}"""
 
 
 def inject_agent_instructions(root: Path, harness_root: Path | None = None) -> list[str]:
-    """Write or update the mandatory harness block in CLAUDE.md, AGENTS.md, GEMINI.md.
+    """Inject a compact harness reference block into agent instruction files.
 
-    If the file already exists, replaces the block between the harness markers.
-    If the file doesn't exist yet, creates it with just the harness block so the
-    project owner can add more content later.
+    Checks CLAUDE.md, AGENTS.md, CODEX.md, GEMINI.md.  Only injects into files
+    that already exist (don't create new ones — the user manages those).  If a file
+    has no harness block yet, appends one.  If it already has one, replaces it.
 
-    Returns list of files that were written or updated.
+    Returns list of filenames that were written or updated.
     """
     block   = _harness_instruction_block(root, harness_root)
     updated = []
 
     for filename in _AGENT_INSTRUCTION_FILES:
         path = root / filename
+        if not path.exists():
+            continue   # skip — only inject into files the user already maintains
         try:
-            if path.exists():
-                content = path.read_text(encoding="utf-8")
-                if _HARNESS_BLOCK_START in content:
-                    # Replace existing block
-                    start = content.index(_HARNESS_BLOCK_START)
-                    end   = content.index(_HARNESS_BLOCK_END) + len(_HARNESS_BLOCK_END)
-                    new_content = content[:start] + block + content[end:]
-                else:
-                    # Append block at end
-                    new_content = content.rstrip("\n") + "\n\n" + block + "\n"
-                path.write_text(new_content, encoding="utf-8")
+            content = path.read_text(encoding="utf-8")
+            if _HARNESS_BLOCK_START in content:
+                start = content.index(_HARNESS_BLOCK_START)
+                end   = content.index(_HARNESS_BLOCK_END) + len(_HARNESS_BLOCK_END)
+                new_content = content[:start] + block + content[end:]
             else:
-                # Create minimal file — owner adds project-specific content above
-                path.write_text(block + "\n", encoding="utf-8")
+                new_content = content.rstrip("\n") + "\n\n" + block + "\n"
+            path.write_text(new_content, encoding="utf-8")
             updated.append(filename)
         except Exception:
             pass  # never fail init due to instruction injection

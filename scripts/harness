@@ -450,12 +450,14 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
 
     # ── MCP registration summary ──────────────────────────────────────────────
     print()
-    _agent_files = ["CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+    _agent_files = ["CLAUDE.md", "AGENTS.md", "CODEX.md", "GEMINI.md"]
     injected = [f for f in _agent_files
                 if (target / f).exists()
                 and "harness:start" in (target / f).read_text(encoding="utf-8", errors="ignore")]
     if injected:
         _ok(f"agent rules injected  {DIM}{', '.join(injected)}{R}")
+    else:
+        _warn("no agent files found — create CLAUDE.md/CODEX.md/GEMINI.md and re-run")
 
     _mcp_configs = {
         "Claude Code":       target / ".mcp.json",
@@ -923,7 +925,7 @@ def run_status(target: Path) -> int:
         _row("MCP server",  f"{Y}!{R}  .harness/mcp.json missing — run: harness init")
 
     # Agent instruction files
-    _AGENT_FILES = ["CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+    _AGENT_FILES = ["CLAUDE.md", "AGENTS.md", "CODEX.md", "GEMINI.md"]
     injected = [f for f in _AGENT_FILES if (target / f).exists() and "harness:start" in (target / f).read_text(encoding="utf-8", errors="ignore")]
     missing  = [f for f in _AGENT_FILES if (target / f).exists() and "harness:start" not in (target / f).read_text(encoding="utf-8", errors="ignore")]
     if injected:
@@ -931,7 +933,7 @@ def run_status(target: Path) -> int:
     if missing:
         _row("Agent rules",  f"{Y}!{R}  harness block missing in: {', '.join(missing)}  {DIM}(re-run: harness init){R}")
     if not injected and not missing:
-        _row("Agent rules",  f"{DIM}no agent files found — run: harness init{R}")
+        _row("Agent rules",  f"{DIM}no agent files found — create CLAUDE.md/CODEX.md/GEMINI.md{R}")
 
     # Lifecycle hooks
     hooks_path = target / ".harness" / "hooks.json"
@@ -1004,17 +1006,14 @@ def run_mcp(target: Path, action: str) -> int:
             _row("MCP schema", f"{Y}missing{R}  — run:  harness mcp register")
 
         # Agent instruction files
-        _AGENT_FILES = ["CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+        _AGENT_FILES = ["CLAUDE.md", "AGENTS.md", "CODEX.md", "GEMINI.md"]
         injected = [f for f in _AGENT_FILES
                     if (target / f).exists()
                     and "harness:start" in (target / f).read_text(encoding="utf-8", errors="ignore")]
-        has_schema_ref = [f for f in injected
-                          if "mcp_schema.md" in (target / f).read_text(encoding="utf-8", errors="ignore")]
         if injected:
-            schema_ok = f"  {DIM}+schema ref{R}" if has_schema_ref else f"  {Y}(no schema ref — re-run register){R}"
-            _row("Agent rules", f"{G}injected{R}  {DIM}{', '.join(injected)}{R}{schema_ok}")
+            _row("Agent rules", f"{G}injected{R}  {DIM}{', '.join(injected)}{R}")
         else:
-            _row("Agent rules", f"{Y}missing{R}  — run:  harness mcp register")
+            _row("Agent rules", f"{Y}missing{R}  — create CLAUDE.md/CODEX.md/GEMINI.md then re-run")
 
         print()
 
