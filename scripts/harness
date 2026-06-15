@@ -254,194 +254,87 @@ def _ensure_path(bin_dir: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TUI  (curses full-screen interactive session)
+# Interactive menu  (Ollama style — ANSI inline, no curses)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_C = {          # color pair indices
-    "title":   1,
-    "badge":   2,
-    "cursor":  3,
-    "dim":     4,
-    "ok":      5,
-    "warn":    6,
-    "key":     7,
-}
+_VERSION = "1.0"
 
-_MENU = [
-    ("init",    "Initialize harness for this project  (BM25 + semantic RAG)"),
-    ("index",   "Build / rebuild semantic RAG index   (Ollama model picker)"),
-    ("grill",   "Fill [CUSTOMIZE] section interactively"),
-    ("status",  "Show project state, memory count, feature progress"),
-    ("analyze", "Analyze project and print profile JSON"),
-    ("eject",   "Remove harness config, keep production_artifacts data"),
+_MENU_ITEMS = [
+    ("init",    "Initialize harness for this project",
+                "Detect stack, build BM25 + semantic RAG index, write HARNESS.md"),
+    ("index",   "Build / rebuild semantic RAG index",
+                "Pick Ollama model interactively, embed all chunks"),
+    ("grill",   "Fill [CUSTOMIZE] section interactively",
+                "Q&A session that writes project context into HARNESS.md"),
+    ("status",  "Show project state",
+                "Memory records, feature progress, routing policy"),
+    ("analyze", "Analyze project and print profile",
+                "Language detection, keywords, key files — JSON output"),
+    ("eject",   "Remove harness config, keep data",
+                "Deletes .harness/, HARNESS.md, HARNESS.html — keeps production_artifacts/"),
 ]
 
 
-def _project_badge(target: Path) -> tuple[str, bool]:
-    """Return (label, initialized)."""
+def _project_info(target: Path) -> str:
     pj = target / ".harness" / "project.json"
     if pj.exists():
         try:
-            d = json.loads(pj.read_text(encoding="utf-8"))
+            d    = json.loads(pj.read_text(encoding="utf-8"))
             lang = d.get("language", "?")
             fw   = d.get("framework", "")
             name = d.get("project_name", target.name)
-            label = f"{name}  [{lang}" + (f"/{fw}" if fw else "") + "]"
-            return label, True
+            tag  = f"{lang}" + (f"/{fw}" if fw else "")
+            return f"{name}  [{tag}]  ● initialized"
         except Exception:
             pass
-    return target.name, False
+    return f"{target.name}  ○ not initialized"
 
 
-def _draw(stdscr, idx: int, target: Path, message: str) -> None:
-    import curses
-    stdscr.erase()
-    H, W = stdscr.getmaxyx()
+def launch_menu(target: Path) -> None:
+    from harness_core.tui import MenuItem, menu, confirm
 
-    badge_text, initialized = _project_badge(target)
-    status_str = "● initialized" if initialized else "○ not initialized"
+    items = [MenuItem(key=k, label=lbl, desc=desc) for k, lbl, desc in _MENU_ITEMS]
 
-    # ── header ────────────────────────────────────────────────────────────────
-    title = "  ◈  HARNESS"
-    stdscr.attron(curses.color_pair(_C["title"]) | curses.A_BOLD)
-    stdscr.addstr(0, 0, " " * W)
-    stdscr.addstr(0, 0, title[:W])
-    stdscr.attroff(curses.color_pair(_C["title"]) | curses.A_BOLD)
-
-    # project badge (right side of header)
-    badge = f"  {badge_text}  "
-    bx = max(len(title) + 2, W - len(badge) - 2)
-    stdscr.attron(curses.color_pair(_C["badge"]))
-    stdscr.addstr(0, min(bx, W - len(badge) - 1), badge[: W - bx])
-    stdscr.attroff(curses.color_pair(_C["badge"]))
-
-    # path + status row
-    path_line = f"  {target}   {status_str}"
-    stdscr.attron(curses.color_pair(_C["dim"]))
-    stdscr.addstr(1, 0, path_line[:W])
-    stdscr.attroff(curses.color_pair(_C["dim"]))
-
-    stdscr.hline(2, 0, curses.ACS_HLINE, W)
-
-    # ── menu ──────────────────────────────────────────────────────────────────
-    for i, (cmd, desc) in enumerate(_MENU):
-        row = 4 + i * 2
-        if row >= H - 3:
-            break
-        if i == idx:
-            stdscr.attron(curses.color_pair(_C["cursor"]) | curses.A_BOLD)
-            stdscr.addstr(row, 2, f"  ❯  {cmd:<10}  {desc}"[: W - 4])
-            stdscr.attroff(curses.color_pair(_C["cursor"]) | curses.A_BOLD)
-        else:
-            stdscr.attron(curses.color_pair(_C["dim"]))
-            stdscr.addstr(row, 2, f"     {cmd:<10}  {desc}"[: W - 4])
-            stdscr.attroff(curses.color_pair(_C["dim"]))
-
-    # ── message bar ───────────────────────────────────────────────────────────
-    if message:
-        stdscr.attron(curses.color_pair(_C["ok"]))
-        stdscr.addstr(H - 3, 2, message[: W - 4])
-        stdscr.attroff(curses.color_pair(_C["ok"]))
-
-    # ── footer ────────────────────────────────────────────────────────────────
-    stdscr.hline(H - 2, 0, curses.ACS_HLINE, W)
-    hints = "  ↑ ↓  move    Enter  run    q  quit"
-    stdscr.attron(curses.color_pair(_C["key"]))
-    stdscr.addstr(H - 1, 0, hints[:W])
-    stdscr.attroff(curses.color_pair(_C["key"]))
-
-    stdscr.refresh()
-
-
-def _run_command_fullscreen(target: Path, cmd: str) -> str:
-    """Exit curses, run command printing to terminal, re-enter on keypress.
-    Returns a short status message to show in the menu after returning."""
-    import curses
-    curses.endwin()
-
-    print(f"\n\x1b[1;36m── harness {cmd} ──\x1b[0m\n")
-
-    try:
-        if cmd == "init":
-            rc = run_init(target)
-        elif cmd == "eject":
-            from harness_core.tui import confirm
-            print(f"Project: {target}")
-            ok = confirm(
-                "Remove .harness/, HARNESS.md, HARNESS.html, configs/claude-mcp.json?",
-                default=False,
-            )
-            rc = run_eject(target) if ok else 0
-        elif cmd == "analyze":
-            rc = run_analyze(target)
-        elif cmd == "grill":
-            rc = run_grill(target)
-        elif cmd == "index":
-            rc = run_index(target)
-        elif cmd == "status":
-            rc = run_status(target)
-        else:
-            rc = 1
-    except KeyboardInterrupt:
-        rc = 130
-
-    status = "\x1b[32m✓ done\x1b[0m" if rc == 0 else f"\x1b[33m⚠ exit {rc}\x1b[0m"
-    print(f"\n\x1b[2m{status}  — press any key to return\x1b[0m")
-
-    # consume any pending chars then wait for one keypress
-    import tty, termios
-    fd  = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
-    msg = f"last: harness {cmd}  ({'ok' if rc == 0 else f'exit {rc}'})"
-    return msg
-
-
-def _tui_main(stdscr, target: Path) -> None:
-    import curses
-
-    curses.curs_set(0)
-    curses.use_default_colors()
-
-    # define color pairs
-    curses.init_pair(_C["title"],  curses.COLOR_BLACK,  curses.COLOR_CYAN)
-    curses.init_pair(_C["badge"],  curses.COLOR_CYAN,   -1)
-    curses.init_pair(_C["cursor"], curses.COLOR_CYAN,   -1)
-    curses.init_pair(_C["dim"],    8 if curses.COLORS >= 256 else curses.COLOR_WHITE, -1)
-    curses.init_pair(_C["ok"],     curses.COLOR_GREEN,  -1)
-    curses.init_pair(_C["warn"],   curses.COLOR_YELLOW, -1)
-    curses.init_pair(_C["key"],    curses.COLOR_CYAN,   -1)
-
-    idx     = 0
-    message = ""
+    info  = _project_info(target)
+    title = f"Harness {_VERSION}   \x1b[2m{info}\x1b[0m"
 
     while True:
-        _draw(stdscr, idx, target, message)
-        key = stdscr.getch()
-
-        if key in (ord("q"), ord("Q"), 27):   # q / Esc
+        chosen = menu(title, items, version="")
+        if chosen is None:
             break
-        elif key == curses.KEY_UP:
-            idx = (idx - 1) % len(_MENU)
-            message = ""
-        elif key == curses.KEY_DOWN:
-            idx = (idx + 1) % len(_MENU)
-            message = ""
-        elif key in (curses.KEY_ENTER, 10, 13):
-            cmd = _MENU[idx][0]
-            message = _run_command_fullscreen(target, cmd)
-            # re-init curses after coming back
-            stdscr.refresh()
 
+        print(f"\n\x1b[1;36m── harness {chosen} ──\x1b[0m\n")
 
-def launch_tui(target: Path) -> None:
-    import curses
-    curses.wrapper(_tui_main, target)
+        try:
+            if chosen == "init":
+                run_init(target)
+            elif chosen == "eject":
+                ok = confirm(
+                    "Remove .harness/, HARNESS.md, HARNESS.html, configs/claude-mcp.json?",
+                    default=False,
+                )
+                if ok:
+                    run_eject(target)
+                else:
+                    print("  cancelled")
+            elif chosen == "analyze":
+                run_analyze(target)
+            elif chosen == "grill":
+                run_grill(target)
+            elif chosen == "index":
+                run_index(target)
+            elif chosen == "status":
+                run_status(target)
+        except KeyboardInterrupt:
+            print("\n  interrupted")
+
+        print()
+        input("\x1b[2m  press Enter to return to menu…\x1b[0m")
+        print()
+
+        # refresh info line after command may have changed state
+        info  = _project_info(target)
+        title = f"Harness {_VERSION}   \x1b[2m{info}\x1b[0m"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -477,9 +370,9 @@ def main() -> int:
     args = parser.parse_args()
     target = _project_root(getattr(args, "path", None) or args.path if hasattr(args, "path") else None)
 
-    # ── no subcommand → open TUI ──────────────────────────────────────────────
+    # ── no subcommand → open interactive menu ────────────────────────────────
     if not args.command:
-        launch_tui(target)
+        launch_menu(target)
         return 0
 
     # ── direct subcommand (for scripting / CI) ────────────────────────────────
