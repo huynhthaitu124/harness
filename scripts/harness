@@ -578,7 +578,8 @@ def run_agents_cmd(target: Path) -> int:  # noqa: C901
                 # Auto-install via curl script
                 import subprocess as _sp
                 install_cmd = agent.get("install_cmd", [])
-                cmd_display = agent.get("install_steps", [""])[0]
+                # Prefer the pre-computed platform-specific display string
+                cmd_display = agent.get("install_cmd_display") or agent.get("install_steps", [""])[0]
                 if not install_cmd:
                     _warn(f"No install command defined for {label}")
                     return False
@@ -609,8 +610,9 @@ def run_agents_cmd(target: Path) -> int:  # noqa: C901
                 if url:
                     _info(f"Download from:  {B}{url}{R}")
                     try:
-                        import subprocess as _sp
-                        _sp.run(["open", url], check=False)
+                        import subprocess as _sp, sys as _sys_url
+                        _open_cmd = ["start", url] if _sys_url.platform == "win32" else ["open", url]
+                        _sp.run(_open_cmd, check=False)
                         _info("Opened download page in your browser.")
                     except Exception:
                         pass

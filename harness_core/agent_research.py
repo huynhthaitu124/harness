@@ -69,8 +69,10 @@ def detect_agent_clis() -> list[dict[str, Any]]:
       auth_note     extra plain-text instruction shown after install
     """
     agents: list[dict[str, Any]] = []
+    import sys as _sys_top
+    _on_windows = _sys_top.platform == "win32"
     npm_ok    = bool(shutil.which("npm"))
-    brew_ok   = bool(shutil.which("brew"))
+    brew_ok   = bool(shutil.which("brew")) and not _on_windows
 
     # ── Claude Code CLI ────────────────────────────────────────────────────────
     claude_path = shutil.which("claude")
@@ -170,34 +172,47 @@ def detect_agent_clis() -> list[dict[str, Any]]:
             ag_version = (_vr.stdout + _vr.stderr).strip().split("\n")[0][:40]
         except Exception:
             pass
-    import sys as _sys
+    _is_win = _on_windows
     _ag_install_cmd = (
         ["bash", "-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"]
-        if _sys.platform != "win32" else
+        if not _is_win else
         ["powershell", "-Command", "irm https://antigravity.google/cli/install.ps1 | iex"]
     )
-    agents.append({
-        "name":          "antigravity",
-        "label":         "Antigravity CLI",
-        "available":     ag_inst and ag_auth,
-        "installed":     ag_inst,
-        "authed":        ag_auth,
-        "detail":        (ag_version or ag_path or "ready") if ag_inst
-                         else "curl -fsSL https://antigravity.google/cli/install.sh | bash",
-        "model":         None,
-        "install_how":   "curl",
-        "install_cmd":   _ag_install_cmd,
-        "install_pkg":   None,
-        "auth_cmd":      ["antigravity", "auth", "login"],
-        "auth_url":      "https://antigravity.google/download#antigravity-cli",
-        "auth_note":     "Sign in with your Google account.\n"
-                         "Your browser will open for OAuth — log in and the token is stored automatically.",
-        "docs_url":      "https://antigravity.google/download#antigravity-cli",
-        "install_steps": [
+    _ag_install_display = (
+        "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+        if not _is_win else
+        "irm https://antigravity.google/cli/install.ps1 | iex  # run in PowerShell"
+    )
+    _ag_install_steps = (
+        [
             "curl -fsSL https://antigravity.google/cli/install.sh | bash",
             "antigravity auth login  # browser redirect — sign in with Google",
             "antigravity --version  # verify",
-        ],
+        ] if not _is_win else [
+            "irm https://antigravity.google/cli/install.ps1 | iex  # run in PowerShell",
+            "antigravity auth login  # browser redirect — sign in with Google",
+            "antigravity --version  # verify",
+        ]
+    )
+    agents.append({
+        "name":                "antigravity",
+        "label":               "Antigravity CLI",
+        "available":           ag_inst and ag_auth,
+        "installed":           ag_inst,
+        "authed":              ag_auth,
+        "detail":              (ag_version or ag_path or "ready") if ag_inst
+                               else _ag_install_display,
+        "model":               None,
+        "install_how":         "curl",
+        "install_cmd":         _ag_install_cmd,
+        "install_cmd_display": _ag_install_display,
+        "install_pkg":         None,
+        "auth_cmd":            ["antigravity", "auth", "login"],
+        "auth_url":            "https://antigravity.google/download#antigravity-cli",
+        "auth_note":           "Sign in with your Google account.\n"
+                               "Your browser will open for OAuth — log in and the token is stored automatically.",
+        "docs_url":            "https://antigravity.google/download#antigravity-cli",
+        "install_steps":       _ag_install_steps,
     })
 
     # ── Ollama (platform + models) ─────────────────────────────────────────────
@@ -208,15 +223,24 @@ def detect_agent_clis() -> list[dict[str, Any]]:
 
     if not ollama_inst:
         # Offer to install Ollama itself — it will let the user pull a model next
+        if _on_windows:
+            _ollama_how    = "url"
+            _ollama_detail = "download OllamaSetup.exe from ollama.com/download"
+        elif brew_ok:
+            _ollama_how    = "brew"
+            _ollama_detail = "brew install ollama"
+        else:
+            _ollama_how    = "url"
+            _ollama_detail = "download from ollama.com/download"
         agents.append({
             "name":        "__install_ollama__",
             "label":       "Local model (Ollama — not installed)",
             "available":   False,
             "installed":   False,
             "authed":      True,
-            "detail":      "brew install ollama" if brew_ok else "download from ollama.com",
+            "detail":      _ollama_detail,
             "model":       None,
-            "install_how": "brew" if brew_ok else "url",
+            "install_how": _ollama_how,
             "install_pkg": "ollama",
             "auth_cmd":    None,
             "auth_url":    "https://ollama.com/download",
