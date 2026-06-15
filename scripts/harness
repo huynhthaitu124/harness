@@ -287,6 +287,23 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
             _warn(f"agent research failed: {exc}")
             _info("continuing with standard sections")
 
+        # ── workflow inference from git history ────────────────────────────────
+        print()
+        _info(f"Inferring ticket workflow from git history + CI config...")
+        try:
+            from harness_core.agent_research import research_workflow
+            from harness_core.workflow_steps import save_workflow
+            wf = research_workflow(target, research_agent, analysis)
+            if wf:
+                save_workflow(target, wf)
+                ts = wf.get("ticket_system") or "—"
+                bc = wf.get("build_cmd") or "—"
+                _ok(f"workflow saved  {DIM}ticket={ts}  build={bc}{R}")
+            else:
+                _warn("workflow inference returned nothing — skipping workflow section")
+        except Exception as exc:
+            _warn(f"workflow inference failed: {exc}")
+
     print()
     result = init_project_full(target, HARNESS_ROOT, analysis, dry_run=False, skip_index=skip_index,
                                agent_sections=agent_sections)

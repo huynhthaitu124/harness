@@ -685,8 +685,6 @@ def run_grill_session(
     framework: str,
     project_name: str,
 ) -> dict[str, str]:
-    from harness_core.workflow_steps import WORKFLOW_GRILL_QUESTIONS
-
     questions = generate_grill_questions(language, framework)
     answers: dict[str, str] = {}
     print(f"\n=== Harness Grill Session — {project_name} ({language}/{framework or 'unknown'}) ===")
@@ -700,35 +698,18 @@ def run_grill_session(
         if answer:
             answers[item["key"]] = answer
 
-    # ── Ticket workflow setup ─────────────────────────────────────────────────
-    print("\n--- Ticket Workflow ---")
-    print("These answers teach agents your project's work loop for every ticket.\n")
-    for item in WORKFLOW_GRILL_QUESTIONS:
-        try:
-            answer = input(f"{item['q']}\n> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGrill session interrupted.")
-            break
-        if answer:
-            answers[item["key"]] = answer
+    # Ticket workflow is now inferred by the selected agent during `harness init`
+    # (reads git log, branch names, CI config). No interactive questions needed.
 
     return answers
 
 
 def write_grill_answers_to_harness_md(harness_md_path: Path, answers: dict[str, str]) -> None:
-    from harness_core.workflow_steps import answers_to_workflow, save_workflow, render_workflow_md
-
     if not harness_md_path.exists() or not answers:
         return
 
-    # ── Save workflow.json if workflow answers were provided ──────────────────
-    wf_keys = {k for k in answers if k.startswith("wf_")}
-    project_root = harness_md_path.parent
-    if wf_keys:
-        wf = answers_to_workflow(answers)
-        save_workflow(project_root, wf)
-
-    # ── Write non-workflow answers into HARNESS.md ────────────────────────────
+    # Grill answers no longer contain wf_* keys — workflow is agent-inferred during init.
+    # Write only plain project-specific answers into the HARNESS.md marker block.
     plain = {k: v for k, v in answers.items() if not k.startswith("wf_")}
     lines: list[str] = []
     for key, value in plain.items():
@@ -737,14 +718,7 @@ def write_grill_answers_to_harness_md(harness_md_path: Path, answers: dict[str, 
 
     content = harness_md_path.read_text(encoding="utf-8")
     old_marker = "<!-- populated by harness-grill-project -->"
-
-    # Append workflow section after the bullet list
-    workflow_block = ""
-    if wf_keys:
-        wf_md = render_workflow_md(answers_to_workflow(answers))
-        workflow_block = f"\n\n{wf_md}"
-
-    new_block = "\n".join(lines) + workflow_block + f"\n\n{old_marker}"
+    new_block = "\n".join(lines) + f"\n\n{old_marker}"
     updated = content.replace(old_marker, new_block)
     harness_md_path.write_text(updated, encoding="utf-8")
 

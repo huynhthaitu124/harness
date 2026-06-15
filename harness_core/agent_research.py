@@ -620,6 +620,181 @@ def _parse_research_json(raw: str, agent_name: str) -> dict[str, Any] | None:
     return None
 
 
+# ── Workflow research ─────────────────────────────────────────────────────────
+
+_WORKFLOW_SCHEMA = """{
+  "ticket_system": "openproject | jira | linear | github | notion | none",
+  "ticket_url": "base URL of the ticket tracker (e.g. https://op.example.com), or empty string",
+  "base_branch": "branch agents checkout before starting work (e.g. development, main, master)",
+  "branch_pattern": "naming pattern for new branches (e.g. bug/<id> | feat/<id>-<slug>)",
+  "context_files": ["HARNESS.md", "other docs agents should always read before starting a ticket"],
+  "build_cmd": "command that verifies the build passes (e.g. msbuild PAGSWebRole /t:Build, npm test, pytest, dotnet build)",
+  "critical_rules": [
+    "A hard rule agents must ALWAYS follow on this project",
+    "Another critical rule — add as many as needed"
+  ]
+}"""
+
+
+def _gather_git_context(root: Path) -> str:
+    """Collect git log, branch names, and CI config snippets for workflow inference."""
+    def _run(cmd: list[str]) -> str:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(root), timeout=15)
+            return r.stdout.strip()
+        except Exception:
+            return ""
+
+    parts: list[str] = []
+
+    log = _run(["git", "log", "--oneline", "-80"])
+    if log:
+        parts.append("=== Recent commits (last 80) ===\n" + log)
+
+    branches = _run(["git", "branch", "-a"])
+    if branches:
+        parts.append("\n=== All branches ===\n" + branches)
+
+    # CI/build files — first 40 lines each
+    import glob as _glob
+    ci_patterns = [
+        ".github/workflows/*.yml", ".github/workflows/*.yaml",
+        ".gitlab-ci.yml", "Jenkinsfile", ".circleci/config.yml",
+        "azure-pipelines.yml", ".travis.yml", "Makefile",
+    ]
+    ci_found: list[str] = []
+    for pat in ci_patterns:
+        ci_found.extend(_glob.glob(str(root / pat)))
+
+    for fpath in ci_found[:5]:
+        rel = fpath[len(str(root)) + 1:]
+        try:
+            content = Path(fpath).read_text(encoding="utf-8", errors="ignore")
+            snippet = "\n".join(content.splitlines()[:40])
+            parts.append(f"\n=== {rel} (first 40 lines) ===\n{snippet}")
+        except Exception:
+            parts.append(f"\n=== {rel} (unreadable) ===")
+
+    return "\n".join(parts)
+
+
+def _build_workflow_prompt(root: Path, analysis: dict[str, Any], git_ctx: str) -> str:
+    project_name = analysis.get("project_name", root.name)
+    language     = analysis.get("language", "unknown")
+    framework    = analysis.get("framework", "") or "—"
+
+    return (
+        f"Please analyse the {project_name} project and fill in a workflow configuration JSON.\n"
+        f"\n"
+        f"Project: {project_name} | Language: {language} | Framework: {framework}\n"
+        f"Location: {root}\n"
+        f"\n"
+        f"Use the git history and branch names below to infer:\n"
+        f"- Which ticket system is used (look for ticket refs like OP-123, PROJ-456, #123, etc.)\n"
+        f"- The ticket tracker URL if visible in commit messages or branch names\n"
+        f"- The base branch agents should work from (look at what branches are merged into)\n"
+        f"- The branch naming pattern (e.g. bug/OP-123, feat/123-title)\n"
+        f"- What build or test command to run to verify changes (look at CI config, Makefiles, package.json)\n"
+        f"- Any critical rules the team clearly follows (from branch prefixes, commit patterns, CI gates)\n"
+        f"\n"
+        f"--- Git context ---\n"
+        f"{git_ctx or '(no git history found)'}\n"
+        f"---\n"
+        f"\n"
+        f"Fill in this JSON template with your findings. If you cannot determine a field, use an empty string.\n"
+        f"Respond with only the completed JSON:\n"
+        f"\n"
+        f"{_WORKFLOW_SCHEMA}\n"
+    )
+
+
+def _parse_workflow_json(raw: str) -> dict[str, Any] | None:
+    """Extract and validate a workflow dict from raw agent output."""
+    text = raw.strip()
+
+    # Strip markdown fences
+    if text.startswith("```"):
+        lines = text.splitlines()
+        first = next((i for i, l in enumerate(lines) if l.startswith("```")), 0)
+        end   = next(
+            (i for i, l in enumerate(lines[first + 1:], first + 1) if l.strip() == "```"),
+            len(lines),
+        )
+        text = "\n".join(lines[first + 1 : end]).strip()
+
+    def _try(s: str) -> dict[str, Any] | None:
+        try:
+            data = json.loads(s)
+            # Must have at least one of the expected keys
+            if any(k in data for k in ("ticket_system", "base_branch", "build_cmd", "critical_rules")):
+                return data
+        except json.JSONDecodeError:
+            pass
+        return None
+
+    result = _try(text)
+    if result:
+        return result
+
+    start = text.find("{")
+    end   = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        return _try(text[start:end])
+
+    return None
+
+
+def research_workflow(
+    root: Path,
+    agent_name: str,
+    analysis: dict[str, Any],
+) -> "dict[str, Any] | None":
+    """Use the selected agent to infer the project's ticket workflow from git history.
+
+    Returns a full workflow dict (via answers_to_workflow) or None on failure.
+    """
+    import sys as _sys
+    from harness_core.workflow_steps import answers_to_workflow
+
+    _sys.stdout.write("  Gathering git context for workflow inference...\n")
+    _sys.stdout.flush()
+    git_ctx = _gather_git_context(root)
+
+    prompt = _build_workflow_prompt(root, analysis, git_ctx)
+
+    raw: str | None = None
+    if agent_name == "claude":
+        raw = _invoke_claude(root, prompt)
+    elif agent_name == "codex":
+        raw = _invoke_codex(root, prompt)
+    elif agent_name == "antigravity":
+        raw = _invoke_antigravity(root, prompt)
+    elif agent_name.startswith("ollama:"):
+        raw = _invoke_ollama(agent_name[len("ollama:"):], prompt)
+
+    if not raw:
+        return None
+
+    parsed = _parse_workflow_json(raw)
+    if parsed is None:
+        preview = raw[:200].replace("\n", " ")
+        _sys.stdout.write(f"  ! workflow JSON parse failed. Preview: {preview!r}\n")
+        _sys.stdout.flush()
+        return None
+
+    # Convert agent dict → full workflow with patched steps
+    grill_answers = {
+        "wf_ticket_system":  parsed.get("ticket_system", ""),
+        "wf_ticket_url":     parsed.get("ticket_url", ""),
+        "wf_base_branch":    parsed.get("base_branch", ""),
+        "wf_branch_pattern": parsed.get("branch_pattern", ""),
+        "wf_context_files":  ", ".join(parsed.get("context_files", [])),
+        "wf_build_cmd":      parsed.get("build_cmd", ""),
+        "wf_critical_rules": "\\n".join(parsed.get("critical_rules", [])),
+    }
+    return answers_to_workflow(grill_answers)
+
+
 # ── Persistence ───────────────────────────────────────────────────────────────
 
 def save_research(root: Path, data: dict[str, Any]) -> Path:
