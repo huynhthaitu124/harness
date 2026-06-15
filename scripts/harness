@@ -88,21 +88,23 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
 
     print()
     result = init_project_full(target, HARNESS_ROOT, analysis, dry_run=False, skip_index=skip_index)
-    _install_symlink(result)
 
-    created = result.get("created", [])
-    # Show only the meaningful artifacts, not every individual file
+    # ── show created artifacts (check disk, not just the reported list) ────────
     artifacts = [
-        (".harness/", "configuration + BM25 index"),
-        ("HARNESS.md", "project guidelines doc"),
-        ("HARNESS.html", "visual architecture doc"),
-        ("configs/claude-mcp.json", "MCP server config"),
-        ("production_artifacts/memory.jsonl", "seeded memory records"),
+        (target / ".harness",                               ".harness/",              "config + BM25 index"),
+        (target / "HARNESS.md",                             "HARNESS.md",             "project guidelines"),
+        (target / "HARNESS.html",                           "HARNESS.html",           "visual architecture doc"),
+        (target / "configs" / "claude-mcp.json",            "configs/claude-mcp.json","MCP server config"),
+        (target / "production_artifacts" / "memory.jsonl",  "production_artifacts/memory.jsonl", "seeded memory"),
     ]
-    for rel, desc in artifacts:
-        matched = any(rel.rstrip("/") in c for c in created)
-        if matched:
-            _ok(f"{B}{rel}{R}  {DIM}{desc}{R}")
+    for path, label, desc in artifacts:
+        if path.exists():
+            _ok(f"{B}{label}{R}  {DIM}{desc}{R}")
+        else:
+            _warn(f"not created: {label}")
+
+    # ── symlink (after artifacts, silent if already installed) ─────────────────
+    _install_symlink(result)
 
     print()
     if not skip_index:
@@ -338,8 +340,7 @@ def _install_symlink(result: dict) -> None:
             candidate.parent.mkdir(parents=True, exist_ok=True)
             if candidate.is_symlink() or candidate.exists():
                 if Path(os.readlink(candidate)).resolve() == this_script:
-                    print(f"[harness init] already installed: {candidate}")
-                    result["symlink"] = str(candidate)
+                    result["symlink"] = str(candidate)   # already installed, silent
                     return
                 candidate.unlink()
             candidate.symlink_to(this_script)
