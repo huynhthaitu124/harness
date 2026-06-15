@@ -140,6 +140,11 @@ def analyze_project(target_root: Path) -> dict[str, Any]:
     }
 
 
+def is_initialized(target_root: Path) -> bool:
+    """Return True if the project has already been initialized (state.json exists)."""
+    return (target_root / ".harness" / "state.json").exists()
+
+
 def init_project_full(
     target_root: Path,
     harness_root: Path,
@@ -147,11 +152,31 @@ def init_project_full(
     *,
     dry_run: bool = False,
     skip_index: bool = False,
+    force: bool = False,
     agent_sections: "dict[str, Any] | None" = None,
 ) -> dict[str, Any]:
-    created: list[str] = []
+    """Initialize or re-initialize a project.
 
-    def _write(path: Path, text: str) -> None:
+    On first run (force=False, no .harness/):  full init — creates everything.
+    On re-run   (force=False, .harness/ exists): skips expensive data files
+        (index, memory, features, state, hooks, growth) that already exist.
+        Always refreshes docs, MCP schema, agent injection, MCP registration.
+    force=True: rebuilds everything regardless.
+    """
+    created: list[str] = []
+    skipped: list[str] = []
+
+    hd = target_root / ".harness"
+
+    def _should_skip(path: Path) -> bool:
+        """Return True when the path exists and we are not forcing a rebuild."""
+        return (not force) and path.exists()
+
+    def _write(path: Path, text: str, *, always: bool = False) -> None:
+        """Write file. always=True bypasses skip logic (used for cheap re-gen)."""
+        if _should_skip(path) and not always:
+            skipped.append(str(path))
+            return
         if not dry_run:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
@@ -161,16 +186,16 @@ def init_project_full(
         if not dry_run:
             path.mkdir(parents=True, exist_ok=True)
 
-    # All harness data lives under .harness/ — nothing scattered at project root
-    hd = target_root / ".harness"
-
     # ── core config ────────────────────────────────────────────────────────────
-    state = default_state()
-    state["routing_policy"].update(analysis.get("routing_keywords", {}))
     state_path = hd / "state.json"
-    if not dry_run:
-        save_state(state_path, state)
-    created.append(str(state_path))
+    if not _should_skip(state_path):
+        state = default_state()
+        state["routing_policy"].update(analysis.get("routing_keywords", {}))
+        if not dry_run:
+            save_state(state_path, state)
+        created.append(str(state_path))
+    else:
+        skipped.append(str(state_path))
 
     import datetime as _dt
     project_meta = {
@@ -184,51 +209,77 @@ def init_project_full(
         "harness_root":        str(harness_root),
         "analyzed_at":         _dt.datetime.now(_dt.timezone.utc).isoformat(),
     }
-    _write(hd / "project.json", json.dumps(project_meta, indent=2, ensure_ascii=False) + "\n")
+    # project.json always updated — cheap and keeps metadata current
+    _write(hd / "project.json",
+           json.dumps(project_meta, indent=2, ensure_ascii=False) + "\n",
+           always=True)
 
-    # ── BM25 index ────────────────────────────────────────────────────────────
+    # ── BM25 index — skip if already built ───────────────────────────────────
     index_path = hd / "index.json"
-    if not skip_index and not dry_run:
-        build_index(target_root, index_path)
-    created.append(str(index_path))
+    if _should_skip(index_path) or skip_index:
+        skipped.append(str(index_path))
+    else:
+        if not dry_run:
+            build_index(target_root, index_path)
+        created.append(str(index_path))
 
-    # ── memory ────────────────────────────────────────────────────────────────
+    # ── memory — skip if exists (preserves accumulated memories) ─────────────
     memory_path = hd / "memory.jsonl"
-    if not dry_run:
-        seed_memories(memory_path, analysis.get("initial_memories", []))
-    created.append(str(memory_path))
+    if not _should_skip(memory_path):
+        if not dry_run:
+            seed_memories(memory_path, analysis.get("initial_memories", []))
+        created.append(str(memory_path))
+    else:
+        skipped.append(str(memory_path))
 
-    # ── artifact subdirs ──────────────────────────────────────────────────────
+    # ── artifact subdirs — always create (idempotent) ─────────────────────────
     for subdir in ("handoffs", "context_packs", "evaluations"):
         _mkdir(hd / subdir)
-        created.append(str(hd / subdir))
 
-    _write(hd / "handoffs" / "README.md",
-           "# Handoffs\n\nWrite compact center-to-center handoffs here.\n")
+    handoff_readme = hd / "handoffs" / "README.md"
+    if not handoff_readme.exists():
+        _write(handoff_readme, "# Handoffs\n\nWrite compact center-to-center handoffs here.\n")
 
+    # ── feature list — skip if exists ────────────────────────────────────────
     feature_path = hd / "feature_list.json"
-    if not dry_run:
-        init_feature_list(feature_path, analysis.get("initial_features", []))
-    created.append(str(feature_path))
+    if not _should_skip(feature_path):
+        if not dry_run:
+            init_feature_list(feature_path, analysis.get("initial_features", []))
+        created.append(str(feature_path))
+    else:
+        skipped.append(str(feature_path))
 
-    # ── MCP config ────────────────────────────────────────────────────────────
+    # ── MCP config — always update (idempotent) ───────────────────────────────
     mcp_config = generate_mcp_config(harness_root, target_root)
-    _write(hd / "mcp.json", json.dumps(mcp_config, indent=2, ensure_ascii=False) + "\n")
+    _write(hd / "mcp.json",
+           json.dumps(mcp_config, indent=2, ensure_ascii=False) + "\n",
+           always=True)
 
-    # ── lifecycle hooks ───────────────────────────────────────────────────────
-    if not dry_run:
-        save_hooks(target_root, default_hooks())
+    # ── lifecycle hooks — skip if user has customized ─────────────────────────
+    hooks_path = target_root / ".harness" / "hooks.json"
+    if not _should_skip(hooks_path):
+        if not dry_run:
+            save_hooks(target_root, default_hooks())
+        created.append(str(hooks_path))
+    else:
+        skipped.append(str(hooks_path))
 
-    # ── per-project self-growth bootstrap ─────────────────────────────────────
-    if not dry_run:
-        bootstrap_growth(target_root, analysis.get("initial_features", []))
+    # ── per-project self-growth bootstrap — skip if started ──────────────────
+    growth_dir = target_root / ".harness" / "growth"
+    if not _should_skip(growth_dir):
+        if not dry_run:
+            bootstrap_growth(target_root, analysis.get("initial_features", []))
+        created.append(str(growth_dir))
+    else:
+        skipped.append(str(growth_dir))
 
-    # ── docs at project root (agents + browser need these at root) ────────────
+    # ── docs — always regenerate (cheap, no data loss) ────────────────────────
     project_name = analysis.get("project_name", target_root.name)
     _write(target_root / "HARNESS.md",
-           render_harness_md(analysis, harness_root / "scripts", project_name))
+           render_harness_md(analysis, harness_root / "scripts", project_name),
+           always=True)
 
-    # ── MCP schema doc (.harness/mcp_schema.md) ──────────────────────────────
+    # ── MCP schema doc — always regenerate ───────────────────────────────────
     if not dry_run:
         from harness_core.mcp_schema import write_mcp_schema
         schema_path = write_mcp_schema(target_root, harness_root)
@@ -236,24 +287,20 @@ def init_project_full(
     else:
         created.append(str(target_root / ".harness" / "mcp_schema.md"))
 
-    # ── generate AGENTS.md (and CODEX.md) via LLM if they don't exist ───────────
-    # inject_agent_instructions() only injects into existing files, so we must
-    # create these before calling it.  Ollama is tried first; template fallback.
+    # ── generate AGENTS.md / CODEX.md via LLM if missing ────────────────────
     if not dry_run:
-        generated: list[str] = []
         for fname in ("AGENTS.md", "CODEX.md"):
             p = target_root / fname
             if not p.exists():
                 content = generate_agents_md(analysis, target_root)
                 p.write_text(content + "\n", encoding="utf-8")
                 created.append(str(p))
-                generated.append(fname)
 
-    # ── inject mandatory first-call rule into agent instruction files ─────────
+    # ── inject harness block into agent instruction files — always ────────────
     if not dry_run:
         inject_agent_instructions(target_root, harness_root)
 
-    # ── register MCP server in agent config files ─────────────────────────────
+    # ── register MCP server — always (idempotent) ────────────────────────────
     if not dry_run:
         from harness_core.mcp_registration import register_mcp_project, register_mcp_global
         mcp_written = register_mcp_project(target_root, harness_root)
@@ -266,20 +313,26 @@ def init_project_full(
         from harness_core.agent_research import save_research
         save_research(target_root, agent_sections)
 
-    # ── load workflow if it exists ────────────────────────────────────────────
+    # ── load existing research + workflow for HARNESS.html ───────────────────
     from harness_core.workflow_steps import load_workflow
     workflow = load_workflow(target_root)
+    if agent_sections is None:
+        from harness_core.agent_research import load_research
+        agent_sections = load_research(target_root)
 
     _write(target_root / "HARNESS.html",
            render_harness_html(analysis, project_name, harness_root / "scripts",
-                               agent_sections=agent_sections, workflow=workflow))
+                               agent_sections=agent_sections, workflow=workflow),
+           always=True)
 
     return {
         "root":        str(target_root),
         "harness_dir": str(hd),
         "dry_run":     dry_run,
+        "force":       force,
         "analysis":    {k: v for k, v in analysis.items() if k != "initial_memories"},
         "created":     created,
+        "skipped":     skipped,
     }
 
 
