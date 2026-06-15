@@ -6,7 +6,7 @@ Shared token-saving harness for Codex, Claude Code, and Antigravity.
 
 **macOS / Linux:**
 ```bash
-git clone <this-repo> ~/Projects/Harness
+git clone https://github.com/huynhthaitu124/harness ~/Projects/Harness
 cd ~/Projects/Harness
 ./install.sh          # creates ~/.local/bin/harness symlink, updates ~/.zshrc if needed
 source ~/.zshrc
@@ -14,7 +14,7 @@ source ~/.zshrc
 
 **Windows (PowerShell):**
 ```powershell
-git clone <this-repo> $env:USERPROFILE\Projects\Harness
+git clone https://github.com/huynhthaitu124/harness $env:USERPROFILE\Projects\Harness
 cd $env:USERPROFILE\Projects\Harness
 .\install.ps1         # adds scripts\ to user PATH (no admin required)
 # restart terminal
