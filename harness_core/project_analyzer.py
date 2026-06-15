@@ -8,6 +8,55 @@ from typing import Any
 from harness_core.context_budget import build_context_pack
 from harness_core.memory_index import record_memory
 
+# ── Agent / AI tool detection ─────────────────────────────────────────────────
+# Each entry: (dir_or_file_pattern, agent_name, description)
+# Checked at root level first, then one subdir deep for monorepos.
+_AGENT_SIGNALS: list[tuple[str, str, str]] = [
+    # directories
+    (".agents",          "Antigravity",  "rules, skills, resources"),
+    (".claude",          "Claude Code",  "project config"),
+    (".codex-artifacts", "Codex",        "output artifacts"),
+    (".codex-nightly",   "Codex Nightly","nightly run artifacts"),
+    (".gemini",          "Gemini",       "project config"),
+    (".cursor",          "Cursor",       "rules & settings"),
+    (".continue",        "Continue",     "context config"),
+    (".aider",           "Aider",        "settings"),
+    (".codeium",         "Codeium",      "context"),
+    # files
+    ("AGENTS.md",        "OpenAI Codex", "agent instructions"),
+    ("CLAUDE.md",        "Claude Code",  "agent instructions"),
+    ("GEMINI.md",        "Gemini CLI",   "agent instructions"),
+    (".mcp.json",        "MCP",          "server config"),
+    ("mcp.json",         "MCP",          "server config"),
+    ("copilot-instructions.md", "GitHub Copilot", "instructions"),
+    (".github/copilot-instructions.md", "GitHub Copilot", "instructions"),
+]
+
+
+def detect_agents(root: Path) -> list[dict[str, str]]:
+    """Scan root (and one level deep for monorepos) for AI agent configs.
+
+    Returns list of {agent, path, description} dicts, deduplicated by agent name.
+    """
+    found: dict[str, dict] = {}  # agent_name → first occurrence
+
+    def _check(p: Path, agent: str, desc: str) -> None:
+        if p.exists() and agent not in found:
+            rel = str(p.relative_to(root))
+            found[agent] = {"agent": agent, "path": rel, "description": desc}
+
+    for pattern, agent, desc in _AGENT_SIGNALS:
+        _check(root / pattern, agent, desc)
+        # one level deep (monorepo subdirs)
+        for child in root.iterdir():
+            if child.is_dir() and not child.name.startswith(".") and child.name not in {
+                "node_modules", "dist", "build", "bin", "obj", "production_artifacts"
+            }:
+                _check(child / pattern, agent, desc)
+
+    return list(found.values())
+
+
 _LANGUAGE_CONFIG_FILES: dict[str, tuple[str, str]] = {
     "package.json": ("javascript", "node"),
     "pyproject.toml": ("python", ""),

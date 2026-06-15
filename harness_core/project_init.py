@@ -7,6 +7,7 @@ from typing import Any
 from harness_core.feature_state import init_feature_list
 from harness_core.project_analyzer import (
     build_analysis_context,
+    detect_agents,
     detect_project_type,
     extract_key_files,
     generate_initial_features,
@@ -54,25 +55,24 @@ def init_project_harness(root: Path, features: list[str]) -> dict[str, Any]:
 
 def analyze_project(target_root: Path) -> dict[str, Any]:
     project_type = detect_project_type(target_root)
-    key_files = extract_key_files(target_root)
+    key_files    = extract_key_files(target_root)
     context_snippet = build_analysis_context(target_root, key_files)
     keywords = generate_routing_keywords(
         project_type["language"],
         project_type["framework"],
     )
     features = generate_initial_features(project_type["language"])
-    memories = generate_initial_memories(
-        {**project_type},
-        target_root,
-    )
+    memories = generate_initial_memories({**project_type}, target_root)
+    agents   = detect_agents(target_root)
     return {
         **project_type,
-        "project_name": target_root.name,
-        "key_files": [str(p) for p in key_files],
+        "project_name":    target_root.name,
+        "key_files":       [str(p) for p in key_files],
         "context_snippet": context_snippet,
         "routing_keywords": keywords,
         "initial_features": features,
         "initial_memories": memories,
+        "agents":          agents,
     }
 
 
@@ -106,13 +106,15 @@ def init_project_full(
 
     import datetime as _dt
     project_meta = {
-        "project_name": analysis.get("project_name", target_root.name),
-        "language": analysis.get("language", "unknown"),
-        "framework": analysis.get("framework", ""),
-        "config_file": analysis.get("config_file", ""),
-        "entry_points": analysis.get("entry_points", []),
-        "harness_root": str(harness_root),
-        "analyzed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "project_name":       analysis.get("project_name", target_root.name),
+        "language":           analysis.get("language", "unknown"),
+        "framework":          analysis.get("framework", ""),
+        "secondary_languages": analysis.get("secondary_languages", []),
+        "config_file":        analysis.get("config_file", ""),
+        "entry_points":       analysis.get("entry_points", []),
+        "agents":             analysis.get("agents", []),
+        "harness_root":       str(harness_root),
+        "analyzed_at":        _dt.datetime.now(_dt.timezone.utc).isoformat(),
     }
     project_json_path = target_root / ".harness" / "project.json"
     _write(project_json_path, json.dumps(project_meta, indent=2, ensure_ascii=False) + "\n")

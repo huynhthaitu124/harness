@@ -77,6 +77,11 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
     if entries:
         _row("Entry points", str(len(entries)))
 
+    agents = analysis.get("agents", [])
+    if agents:
+        names = ", ".join(a["agent"] for a in agents)
+        _row("Agents found", names)
+
     if dry_run:
         _warn("dry-run — no files will be written")
         return 0
@@ -231,6 +236,12 @@ def run_status(target: Path) -> int:
         _row("Project",   d.get("project_name", target.name))
         _row("Stack",     stack)
         _row("Analyzed",  d.get("analyzed_at", "")[:10])
+
+        agents = d.get("agents", [])
+        if agents:
+            for i, a in enumerate(agents):
+                label = "Agents" if i == 0 else ""
+                _row(label, f"{a['agent']}  {DIM}{a['path']}{R}")
 
     if state_path.exists():
         state  = json.loads(state_path.read_text(encoding="utf-8"))
