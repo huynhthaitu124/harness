@@ -115,6 +115,17 @@ def plan_semantic_index(
     }
 
 
+def detect_ollama(host: str = "http://localhost:11434") -> list[str]:
+    """Return list of locally available Ollama model names, or [] if Ollama is unreachable."""
+    try:
+        from urllib.request import urlopen as _open
+        with _open(f"{host.rstrip('/')}/api/tags", timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return [m["name"] for m in data.get("models", [])]
+    except Exception:
+        return []
+
+
 def ollama_embed(texts: list[str], *, model: str = "embeddinggemma", host: str = "http://localhost:11434") -> list[list[float]]:
     payload = json.dumps({"model": model, "input": texts}).encode("utf-8")
     request = Request(f"{host.rstrip('/')}/api/embed", data=payload, headers={"Content-Type": "application/json"})

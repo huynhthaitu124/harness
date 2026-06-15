@@ -56,7 +56,62 @@ def cmd_init(args: argparse.Namespace) -> int:
         _install_symlink(result)
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    if not args.dry_run and not args.skip_index:
+        _maybe_build_semantic_index(target)
+
     return 0
+
+
+def _maybe_build_semantic_index(target: Path) -> None:
+    from harness_core.semantic_index import detect_ollama, build_semantic_index, ollama_embed
+    from harness_core.tui import confirm, select
+
+    models = detect_ollama()
+
+    if not models:
+        print(
+            "\n[harness] Ollama not running — skipping semantic index.\n"
+            "          Start Ollama and run:  harness index <path>",
+            file=sys.stderr,
+        )
+        return
+
+    want = confirm("Build semantic RAG index with Ollama?", default=True)
+    if not want:
+        print("[harness] Semantic index skipped.", file=sys.stderr)
+        return
+
+    # Prefer embedding-style models at the top of the list
+    _EMBED_HINTS = ("embed", "nomic", "mxbai", "bge", "e5", "all-minilm")
+    preferred = [m for m in models if any(h in m.lower() for h in _EMBED_HINTS)]
+    others    = [m for m in models if m not in preferred]
+    ordered   = preferred + others
+
+    chosen = select("Select Ollama model for embeddings:", ordered, default=0)
+    if chosen is None:
+        print("[harness] Semantic index skipped.", file=sys.stderr)
+        return
+
+    index_path = target / "production_artifacts" / "indexes" / "semantic.json"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n[harness] Building semantic index → {index_path}", file=sys.stderr)
+    print(f"[harness] Model: {chosen}  (this may take a few minutes for large repos)", file=sys.stderr)
+
+    try:
+        embedder = lambda texts: ollama_embed(texts, model=chosen)
+        stats = build_semantic_index(target, index_path, embedder=embedder, model=chosen)
+        total   = stats.get("chunk_count", "?")
+        reused  = stats.get("reused_count", 0)
+        new_vec = stats.get("embedded_count", total)
+        print(
+            f"[harness] Done — {total} chunks  ({new_vec} embedded, {reused} reused from cache)",
+            file=sys.stderr,
+        )
+    except Exception as exc:
+        print(f"[harness] Semantic index failed: {exc}", file=sys.stderr)
+        print("[harness] You can retry: harness index <path>", file=sys.stderr)
 
 
 def _install_symlink(result: dict) -> None:
@@ -189,6 +244,18 @@ def cmd_grill(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── index ─────────────────────────────────────────────────────────────────────
+
+def cmd_index(args: argparse.Namespace) -> int:
+    """Rebuild semantic RAG index for a project (interactive model picker)."""
+    target = _project_root(args.path)
+    if not (target / ".harness").exists():
+        print("error: not initialized — run `harness init` first", file=sys.stderr)
+        return 2
+    _maybe_build_semantic_index(target)
+    return 0
+
+
 # ── status ────────────────────────────────────────────────────────────────────
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -241,7 +308,9 @@ def main() -> int:
 
     p_status = sub.add_parser("status", help="Show harness state for this project")
 
-    for p in (p_init, p_eject, p_analyze, p_grill, p_status):
+    p_index = sub.add_parser("index", help="Build/rebuild semantic RAG index (interactive model picker)")
+
+    for p in (p_init, p_eject, p_analyze, p_grill, p_status, p_index):
         p.add_argument("path", nargs="?", default=None, metavar="PATH",
                        help="Project path (default: current directory)")
 
@@ -256,6 +325,7 @@ def main() -> int:
         "analyze": cmd_analyze,
         "grill": cmd_grill,
         "status": cmd_status,
+        "index": cmd_index,
     }
     return dispatch[args.command](args)
 
