@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Harness CLI — interactive TUI when run with no subcommand, direct mode otherwise."""
 from __future__ import annotations
 
 import argparse
@@ -12,165 +13,56 @@ HARNESS_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HARNESS_ROOT))
 
 
-def _project_root(args_path: str | None) -> Path:
-    root = Path(args_path).expanduser().resolve() if args_path else Path(os.getcwd())
+def _project_root(path: str | None) -> Path:
+    root = Path(path).expanduser().resolve() if path else Path(os.getcwd())
     if not root.exists():
         print(f"error: path does not exist: {root}", file=sys.stderr)
         sys.exit(2)
     return root
 
 
-# ── init ──────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Command implementations  (unchanged logic, called both from TUI and CLI)
+# ─────────────────────────────────────────────────────────────────────────────
 
-def cmd_init(args: argparse.Namespace) -> int:
+HARNESS_PATHS = [".harness", "HARNESS.md", "HARNESS.html", "configs/claude-mcp.json"]
+
+
+def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
+             from_analysis: str | None = None) -> int:
     from harness_core.project_init import analyze_project, init_project_full
 
-    target = _project_root(args.path)
-
-    if args.from_analysis:
-        p = Path(args.from_analysis).expanduser()
+    if from_analysis:
+        p = Path(from_analysis).expanduser()
         if not p.exists():
             print(f"error: analysis file not found: {p}", file=sys.stderr)
             return 2
         analysis = json.loads(p.read_text(encoding="utf-8"))
-        print(f"[harness init] using analysis from {p}", file=sys.stderr)
+        print(f"[harness init] using analysis from {p}")
     else:
-        print(f"[harness init] analyzing {target} ...", file=sys.stderr)
+        print(f"[harness init] analyzing {target} ...")
         analysis = analyze_project(target)
         lang = analysis["language"]
-        fw = analysis.get("framework", "")
-        print(f"[harness init] detected {lang}" + (f"/{fw}" if fw else ""), file=sys.stderr)
+        fw   = analysis.get("framework", "")
+        print(f"[harness init] detected {lang}" + (f"/{fw}" if fw else ""))
 
-    if args.dry_run:
-        print("[harness init] dry-run — no files will be written", file=sys.stderr)
+    if dry_run:
+        print("[harness init] dry-run — no files will be written")
 
-    result = init_project_full(
-        target,
-        HARNESS_ROOT,
-        analysis,
-        dry_run=args.dry_run,
-        skip_index=args.skip_index,
-    )
+    result = init_project_full(target, HARNESS_ROOT, analysis, dry_run=dry_run, skip_index=skip_index)
 
-    if not args.dry_run:
+    if not dry_run:
         _install_symlink(result)
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
-    if not args.dry_run and not args.skip_index:
+    if not dry_run and not skip_index:
         _maybe_build_semantic_index(target)
 
     return 0
 
 
-def _maybe_build_semantic_index(target: Path) -> None:
-    from harness_core.semantic_index import detect_ollama, build_semantic_index, ollama_embed
-    from harness_core.tui import confirm, select
-
-    models = detect_ollama()
-
-    if not models:
-        print(
-            "\n[harness] Ollama not running — skipping semantic index.\n"
-            "          Start Ollama and run:  harness index <path>",
-            file=sys.stderr,
-        )
-        return
-
-    want = confirm("Build semantic RAG index with Ollama?", default=True)
-    if not want:
-        print("[harness] Semantic index skipped.", file=sys.stderr)
-        return
-
-    # Prefer embedding-style models at the top of the list
-    _EMBED_HINTS = ("embed", "nomic", "mxbai", "bge", "e5", "all-minilm")
-    preferred = [m for m in models if any(h in m.lower() for h in _EMBED_HINTS)]
-    others    = [m for m in models if m not in preferred]
-    ordered   = preferred + others
-
-    chosen = select("Select Ollama model for embeddings:", ordered, default=0)
-    if chosen is None:
-        print("[harness] Semantic index skipped.", file=sys.stderr)
-        return
-
-    index_path = target / "production_artifacts" / "indexes" / "semantic.json"
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-
-    print(f"\n[harness] Building semantic index → {index_path}", file=sys.stderr)
-    print(f"[harness] Model: {chosen}  (this may take a few minutes for large repos)", file=sys.stderr)
-
-    try:
-        embedder = lambda texts: ollama_embed(texts, model=chosen)
-        stats = build_semantic_index(target, index_path, embedder=embedder, model=chosen)
-        total   = stats.get("chunk_count", "?")
-        reused  = stats.get("reused_count", 0)
-        new_vec = stats.get("embedded_count", total)
-        print(
-            f"[harness] Done — {total} chunks  ({new_vec} embedded, {reused} reused from cache)",
-            file=sys.stderr,
-        )
-    except Exception as exc:
-        print(f"[harness] Semantic index failed: {exc}", file=sys.stderr)
-        print("[harness] You can retry: harness index <path>", file=sys.stderr)
-
-
-def _install_symlink(result: dict) -> None:
-    this_script = Path(__file__).resolve()
-
-    # Try /usr/local/bin first (needs sudo on macOS); fall back to ~/.local/bin
-    candidates = [Path("/usr/local/bin/harness"), Path.home() / ".local" / "bin" / "harness"]
-    symlink: Path | None = None
-    for candidate in candidates:
-        try:
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            if candidate.is_symlink() or candidate.exists():
-                if Path(os.readlink(candidate)).resolve() == this_script:
-                    print(f"[harness init] already installed: {candidate}", file=sys.stderr)
-                    result["symlink"] = str(candidate)
-                    return
-                candidate.unlink()
-            candidate.symlink_to(this_script)
-            symlink = candidate
-            break
-        except PermissionError:
-            continue
-
-    if symlink is None:
-        print("[harness init] warning: could not install harness command (permission denied on all candidates)", file=sys.stderr)
-        return
-
-    print(f"[harness init] installed: {symlink} → {this_script}", file=sys.stderr)
-    result["symlink"] = str(symlink)
-
-    # If the symlink landed in ~/.local/bin, ensure it's on PATH in .zshrc / .bashrc
-    if symlink.parent == Path.home() / ".local" / "bin":
-        _ensure_path(symlink.parent)
-
-
-def _ensure_path(bin_dir: Path) -> None:
-    marker = str(bin_dir)
-    for rc in (Path.home() / ".zshrc", Path.home() / ".bashrc"):
-        if rc.exists() and marker in rc.read_text(encoding="utf-8"):
-            return  # already present in one of the rc files
-
-    zshrc = Path.home() / ".zshrc"
-    line = f'\nexport PATH="{marker}:$PATH"  # added by harness init\n'
-    try:
-        with zshrc.open("a", encoding="utf-8") as f:
-            f.write(line)
-        print(f"[harness init] added {marker} to PATH in {zshrc}", file=sys.stderr)
-        print(f"[harness init] run `source ~/.zshrc` or open a new terminal", file=sys.stderr)
-    except OSError as exc:
-        print(f"[harness init] warning: could not update {zshrc}: {exc}", file=sys.stderr)
-
-
-# ── eject ─────────────────────────────────────────────────────────────────────
-
-HARNESS_PATHS = [".harness", "HARNESS.md", "HARNESS.html", "configs/claude-mcp.json"]
-
-
-def cmd_eject(args: argparse.Namespace) -> int:
-    target = _project_root(args.path)
+def run_eject(target: Path, *, dry_run: bool = False) -> int:
     removed: list[str] = []
     skipped: list[str] = []
 
@@ -179,55 +71,46 @@ def cmd_eject(args: argparse.Namespace) -> int:
         if not path.exists():
             skipped.append(rel)
             continue
-        if args.dry_run:
-            print(f"  [dry-run] would remove {'dir' if path.is_dir() else 'file'}: {path}", file=sys.stderr)
+        if dry_run:
+            print(f"  [dry-run] would remove {'dir' if path.is_dir() else 'file'}: {path}")
         else:
             shutil.rmtree(path) if path.is_dir() else path.unlink()
         removed.append(str(path))
 
     configs_dir = target / "configs"
     if configs_dir.exists() and not any(configs_dir.iterdir()):
-        if not args.dry_run:
+        if not dry_run:
             configs_dir.rmdir()
         removed.append(str(configs_dir))
 
     print(json.dumps({
-        "root": str(target),
-        "dry_run": args.dry_run,
-        "removed": removed,
-        "skipped": skipped,
+        "root": str(target), "dry_run": dry_run,
+        "removed": removed, "skipped": skipped,
         "kept": str(target / "production_artifacts"),
     }, indent=2, ensure_ascii=False))
     return 0
 
 
-# ── analyze ───────────────────────────────────────────────────────────────────
-
-def cmd_analyze(args: argparse.Namespace) -> int:
+def run_analyze(target: Path) -> int:
     from harness_core.project_init import analyze_project
-
-    target = _project_root(args.path)
-    analysis = analyze_project(target)
-    print(json.dumps(analysis, indent=2, ensure_ascii=False))
+    print(json.dumps(analyze_project(target), indent=2, ensure_ascii=False))
     return 0
 
 
-# ── grill ─────────────────────────────────────────────────────────────────────
-
-def cmd_grill(args: argparse.Namespace) -> int:
+def run_grill(target: Path) -> int:
     from harness_core.project_analyzer import run_grill_session, write_grill_answers_to_harness_md
     from harness_core.project_init import analyze_project
 
-    target = _project_root(args.path)
     harness_md = target / "HARNESS.md"
     if not harness_md.exists():
-        print(f"error: HARNESS.md not found — run `harness init` first", file=sys.stderr)
+        print("error: HARNESS.md not found — run init first")
         return 2
 
     project_json = target / ".harness" / "project.json"
     if project_json.exists():
         meta = json.loads(project_json.read_text(encoding="utf-8"))
-        language, framework = meta.get("language", "unknown"), meta.get("framework", "")
+        language     = meta.get("language", "unknown")
+        framework    = meta.get("framework", "")
         project_name = meta.get("project_name", target.name)
     else:
         a = analyze_project(target)
@@ -235,34 +118,26 @@ def cmd_grill(args: argparse.Namespace) -> int:
 
     answers = run_grill_session(target, language, framework, project_name)
     if not answers:
-        print("\nNo answers recorded. HARNESS.md unchanged.", file=sys.stderr)
+        print("\nNo answers recorded. HARNESS.md unchanged.")
         return 0
 
     write_grill_answers_to_harness_md(harness_md, answers)
-    print(f"\n✓ {len(answers)} answer(s) written to {harness_md}", file=sys.stderr)
-    print(json.dumps({"updated": str(harness_md), "keys": list(answers.keys())}, indent=2))
+    print(f"\n✓ {len(answers)} answer(s) written to {harness_md}")
     return 0
 
 
-# ── index ─────────────────────────────────────────────────────────────────────
-
-def cmd_index(args: argparse.Namespace) -> int:
-    """Rebuild semantic RAG index for a project (interactive model picker)."""
-    target = _project_root(args.path)
+def run_index(target: Path) -> int:
     if not (target / ".harness").exists():
-        print("error: not initialized — run `harness init` first", file=sys.stderr)
+        print("error: not initialized — run init first")
         return 2
     _maybe_build_semantic_index(target)
     return 0
 
 
-# ── status ────────────────────────────────────────────────────────────────────
-
-def cmd_status(args: argparse.Namespace) -> int:
-    target = _project_root(args.path)
-    state_path = target / ".harness" / "state.json"
+def run_status(target: Path) -> int:
+    state_path   = target / ".harness" / "state.json"
     project_json = target / ".harness" / "project.json"
-    memory_path = target / "production_artifacts" / "memory.jsonl"
+    memory_path  = target / "production_artifacts" / "memory.jsonl"
     feature_path = target / "production_artifacts" / "feature_list.json"
 
     initialized = state_path.exists()
@@ -284,50 +159,346 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Semantic index helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _maybe_build_semantic_index(target: Path) -> None:
+    from harness_core.semantic_index import detect_ollama, build_semantic_index, ollama_embed
+    from harness_core.tui import confirm, select
+
+    models = detect_ollama()
+    if not models:
+        print(
+            "\n[harness] Ollama not running — skipping semantic index.\n"
+            "          Start Ollama and run:  harness index"
+        )
+        return
+
+    if not confirm("Build semantic RAG index with Ollama?", default=True):
+        print("[harness] Semantic index skipped.")
+        return
+
+    _EMBED_HINTS = ("embed", "nomic", "mxbai", "bge", "e5", "all-minilm")
+    preferred = [m for m in models if any(h in m.lower() for h in _EMBED_HINTS)]
+    ordered   = preferred + [m for m in models if m not in preferred]
+
+    chosen = select("Select Ollama model for embeddings:", ordered, default=0)
+    if chosen is None:
+        print("[harness] Semantic index skipped.")
+        return
+
+    index_path = target / "production_artifacts" / "indexes" / "semantic.json"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n[harness] Building semantic index → {index_path}")
+    print(f"[harness] Model: {chosen}  (may take a few minutes for large repos)")
+
+    try:
+        stats   = build_semantic_index(target, index_path,
+                                        embedder=lambda t: ollama_embed(t, model=chosen),
+                                        model=chosen)
+        total   = stats.get("chunk_count", "?")
+        reused  = stats.get("reused_count", 0)
+        new_vec = stats.get("embedded_count", total)
+        print(f"[harness] Done — {total} chunks  ({new_vec} embedded, {reused} reused)")
+    except Exception as exc:
+        print(f"[harness] Semantic index failed: {exc}")
+        print("[harness] Retry with:  harness  →  index")
+
+
+def _install_symlink(result: dict) -> None:
+    this_script = Path(__file__).resolve()
+    candidates  = [Path("/usr/local/bin/harness"), Path.home() / ".local" / "bin" / "harness"]
+    symlink: Path | None = None
+
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            if candidate.is_symlink() or candidate.exists():
+                if Path(os.readlink(candidate)).resolve() == this_script:
+                    print(f"[harness init] already installed: {candidate}")
+                    result["symlink"] = str(candidate)
+                    return
+                candidate.unlink()
+            candidate.symlink_to(this_script)
+            symlink = candidate
+            break
+        except PermissionError:
+            continue
+
+    if symlink is None:
+        print("[harness init] warning: could not install harness command (permission denied)")
+        return
+
+    print(f"[harness init] installed: {symlink} → {this_script}")
+    result["symlink"] = str(symlink)
+
+    if symlink.parent == Path.home() / ".local" / "bin":
+        _ensure_path(symlink.parent)
+
+
+def _ensure_path(bin_dir: Path) -> None:
+    marker = str(bin_dir)
+    for rc in (Path.home() / ".zshrc", Path.home() / ".bashrc"):
+        if rc.exists() and marker in rc.read_text(encoding="utf-8"):
+            return
+    zshrc = Path.home() / ".zshrc"
+    try:
+        with zshrc.open("a", encoding="utf-8") as f:
+            f.write(f'\nexport PATH="{marker}:$PATH"  # added by harness init\n')
+        print(f"[harness init] added {marker} to PATH in {zshrc}")
+        print("[harness init] run `source ~/.zshrc` or open a new terminal")
+    except OSError as exc:
+        print(f"[harness init] warning: could not update {zshrc}: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TUI  (curses full-screen interactive session)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_C = {          # color pair indices
+    "title":   1,
+    "badge":   2,
+    "cursor":  3,
+    "dim":     4,
+    "ok":      5,
+    "warn":    6,
+    "key":     7,
+}
+
+_MENU = [
+    ("init",    "Initialize harness for this project  (BM25 + semantic RAG)"),
+    ("index",   "Build / rebuild semantic RAG index   (Ollama model picker)"),
+    ("grill",   "Fill [CUSTOMIZE] section interactively"),
+    ("status",  "Show project state, memory count, feature progress"),
+    ("analyze", "Analyze project and print profile JSON"),
+    ("eject",   "Remove harness config, keep production_artifacts data"),
+]
+
+
+def _project_badge(target: Path) -> tuple[str, bool]:
+    """Return (label, initialized)."""
+    pj = target / ".harness" / "project.json"
+    if pj.exists():
+        try:
+            d = json.loads(pj.read_text(encoding="utf-8"))
+            lang = d.get("language", "?")
+            fw   = d.get("framework", "")
+            name = d.get("project_name", target.name)
+            label = f"{name}  [{lang}" + (f"/{fw}" if fw else "") + "]"
+            return label, True
+        except Exception:
+            pass
+    return target.name, False
+
+
+def _draw(stdscr, idx: int, target: Path, message: str) -> None:
+    import curses
+    stdscr.erase()
+    H, W = stdscr.getmaxyx()
+
+    badge_text, initialized = _project_badge(target)
+    status_str = "● initialized" if initialized else "○ not initialized"
+
+    # ── header ────────────────────────────────────────────────────────────────
+    title = "  ◈  HARNESS"
+    stdscr.attron(curses.color_pair(_C["title"]) | curses.A_BOLD)
+    stdscr.addstr(0, 0, " " * W)
+    stdscr.addstr(0, 0, title[:W])
+    stdscr.attroff(curses.color_pair(_C["title"]) | curses.A_BOLD)
+
+    # project badge (right side of header)
+    badge = f"  {badge_text}  "
+    bx = max(len(title) + 2, W - len(badge) - 2)
+    stdscr.attron(curses.color_pair(_C["badge"]))
+    stdscr.addstr(0, min(bx, W - len(badge) - 1), badge[: W - bx])
+    stdscr.attroff(curses.color_pair(_C["badge"]))
+
+    # path + status row
+    path_line = f"  {target}   {status_str}"
+    stdscr.attron(curses.color_pair(_C["dim"]))
+    stdscr.addstr(1, 0, path_line[:W])
+    stdscr.attroff(curses.color_pair(_C["dim"]))
+
+    stdscr.hline(2, 0, curses.ACS_HLINE, W)
+
+    # ── menu ──────────────────────────────────────────────────────────────────
+    for i, (cmd, desc) in enumerate(_MENU):
+        row = 4 + i * 2
+        if row >= H - 3:
+            break
+        if i == idx:
+            stdscr.attron(curses.color_pair(_C["cursor"]) | curses.A_BOLD)
+            stdscr.addstr(row, 2, f"  ❯  {cmd:<10}  {desc}"[: W - 4])
+            stdscr.attroff(curses.color_pair(_C["cursor"]) | curses.A_BOLD)
+        else:
+            stdscr.attron(curses.color_pair(_C["dim"]))
+            stdscr.addstr(row, 2, f"     {cmd:<10}  {desc}"[: W - 4])
+            stdscr.attroff(curses.color_pair(_C["dim"]))
+
+    # ── message bar ───────────────────────────────────────────────────────────
+    if message:
+        stdscr.attron(curses.color_pair(_C["ok"]))
+        stdscr.addstr(H - 3, 2, message[: W - 4])
+        stdscr.attroff(curses.color_pair(_C["ok"]))
+
+    # ── footer ────────────────────────────────────────────────────────────────
+    stdscr.hline(H - 2, 0, curses.ACS_HLINE, W)
+    hints = "  ↑ ↓  move    Enter  run    q  quit"
+    stdscr.attron(curses.color_pair(_C["key"]))
+    stdscr.addstr(H - 1, 0, hints[:W])
+    stdscr.attroff(curses.color_pair(_C["key"]))
+
+    stdscr.refresh()
+
+
+def _run_command_fullscreen(target: Path, cmd: str) -> str:
+    """Exit curses, run command printing to terminal, re-enter on keypress.
+    Returns a short status message to show in the menu after returning."""
+    import curses
+    curses.endwin()
+
+    print(f"\n\x1b[1;36m── harness {cmd} ──\x1b[0m\n")
+
+    try:
+        if cmd == "init":
+            rc = run_init(target)
+        elif cmd == "eject":
+            from harness_core.tui import confirm
+            print(f"Project: {target}")
+            ok = confirm(
+                "Remove .harness/, HARNESS.md, HARNESS.html, configs/claude-mcp.json?",
+                default=False,
+            )
+            rc = run_eject(target) if ok else 0
+        elif cmd == "analyze":
+            rc = run_analyze(target)
+        elif cmd == "grill":
+            rc = run_grill(target)
+        elif cmd == "index":
+            rc = run_index(target)
+        elif cmd == "status":
+            rc = run_status(target)
+        else:
+            rc = 1
+    except KeyboardInterrupt:
+        rc = 130
+
+    status = "\x1b[32m✓ done\x1b[0m" if rc == 0 else f"\x1b[33m⚠ exit {rc}\x1b[0m"
+    print(f"\n\x1b[2m{status}  — press any key to return\x1b[0m")
+
+    # consume any pending chars then wait for one keypress
+    import tty, termios
+    fd  = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    msg = f"last: harness {cmd}  ({'ok' if rc == 0 else f'exit {rc}'})"
+    return msg
+
+
+def _tui_main(stdscr, target: Path) -> None:
+    import curses
+
+    curses.curs_set(0)
+    curses.use_default_colors()
+
+    # define color pairs
+    curses.init_pair(_C["title"],  curses.COLOR_BLACK,  curses.COLOR_CYAN)
+    curses.init_pair(_C["badge"],  curses.COLOR_CYAN,   -1)
+    curses.init_pair(_C["cursor"], curses.COLOR_CYAN,   -1)
+    curses.init_pair(_C["dim"],    8 if curses.COLORS >= 256 else curses.COLOR_WHITE, -1)
+    curses.init_pair(_C["ok"],     curses.COLOR_GREEN,  -1)
+    curses.init_pair(_C["warn"],   curses.COLOR_YELLOW, -1)
+    curses.init_pair(_C["key"],    curses.COLOR_CYAN,   -1)
+
+    idx     = 0
+    message = ""
+
+    while True:
+        _draw(stdscr, idx, target, message)
+        key = stdscr.getch()
+
+        if key in (ord("q"), ord("Q"), 27):   # q / Esc
+            break
+        elif key == curses.KEY_UP:
+            idx = (idx - 1) % len(_MENU)
+            message = ""
+        elif key == curses.KEY_DOWN:
+            idx = (idx + 1) % len(_MENU)
+            message = ""
+        elif key in (curses.KEY_ENTER, 10, 13):
+            cmd = _MENU[idx][0]
+            message = _run_command_fullscreen(target, cmd)
+            # re-init curses after coming back
+            stdscr.refresh()
+
+
+def launch_tui(target: Path) -> None:
+    import curses
+    curses.wrapper(_tui_main, target)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="harness",
-        description="Tri-center harness CLI. Run from inside a project or pass a path.",
+        description="Tri-center harness — no args opens interactive TUI.",
+        add_help=True,
     )
-    parser.add_argument("--path", "-p", metavar="PATH", help="Target project path (default: current directory)")
+    parser.add_argument("--path", "-p", metavar="PATH",
+                        help="Target project path (default: cwd)")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    p_init = sub.add_parser("init", help="Initialize harness for this project")
-    p_init.add_argument("--dry-run", action="store_true")
-    p_init.add_argument("--skip-index", action="store_true", help="Skip building BM25 index")
-    p_init.add_argument("--from-analysis", metavar="FILE", help="Use a pre-built analysis JSON")
+    p_init = sub.add_parser("init",    help="Initialize harness")
+    p_init.add_argument("--dry-run",      action="store_true")
+    p_init.add_argument("--skip-index",   action="store_true")
+    p_init.add_argument("--from-analysis", metavar="FILE")
 
-    p_eject = sub.add_parser("eject", help="Remove harness config, keep data")
+    p_eject = sub.add_parser("eject",   help="Remove harness config, keep data")
     p_eject.add_argument("--dry-run", action="store_true")
 
-    p_analyze = sub.add_parser("analyze", help="Analyze project and print profile JSON")
+    sub.add_parser("analyze", help="Print project profile JSON")
+    sub.add_parser("grill",   help="Fill [CUSTOMIZE] section interactively")
+    sub.add_parser("status",  help="Show harness state")
+    sub.add_parser("index",   help="Build/rebuild semantic RAG index")
 
-    p_grill = sub.add_parser("grill", help="Fill [CUSTOMIZE] section interactively")
-
-    p_status = sub.add_parser("status", help="Show harness state for this project")
-
-    p_index = sub.add_parser("index", help="Build/rebuild semantic RAG index (interactive model picker)")
-
-    for p in (p_init, p_eject, p_analyze, p_grill, p_status, p_index):
-        p.add_argument("path", nargs="?", default=None, metavar="PATH",
-                       help="Project path (default: current directory)")
+    for p in sub.choices.values():
+        p.add_argument("path", nargs="?", default=None, metavar="PATH")
 
     args = parser.parse_args()
+    target = _project_root(getattr(args, "path", None) or args.path if hasattr(args, "path") else None)
+
+    # ── no subcommand → open TUI ──────────────────────────────────────────────
     if not args.command:
-        parser.print_help()
+        launch_tui(target)
         return 0
 
-    dispatch = {
-        "init": cmd_init,
-        "eject": cmd_eject,
-        "analyze": cmd_analyze,
-        "grill": cmd_grill,
-        "status": cmd_status,
-        "index": cmd_index,
-    }
-    return dispatch[args.command](args)
+    # ── direct subcommand (for scripting / CI) ────────────────────────────────
+    if args.command == "init":
+        return run_init(target, dry_run=args.dry_run, skip_index=args.skip_index,
+                        from_analysis=getattr(args, "from_analysis", None))
+    if args.command == "eject":
+        return run_eject(target, dry_run=args.dry_run)
+    if args.command == "analyze":
+        return run_analyze(target)
+    if args.command == "grill":
+        return run_grill(target)
+    if args.command == "index":
+        return run_index(target)
+    if args.command == "status":
+        return run_status(target)
+
+    parser.print_help()
+    return 0
 
 
 if __name__ == "__main__":
