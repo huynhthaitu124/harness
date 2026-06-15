@@ -435,6 +435,94 @@ def extract_key_files(root: Path) -> list[Path]:
     return result
 
 
+_DOC_EXCLUDES = frozenset({
+    "README.md", "readme.md", "HARNESS.md", "AGENTS.md", "CLAUDE.md",
+    "GEMINI.md", "CODEX.md", "CHANGELOG.md", "LICENSE.md", "CONTRIBUTING.md",
+})
+_SPEC_DIRS = (
+    "specs", "spec", "requirements", "docs", "documentation",
+    "design", "designs", "rfc", "RFC", "adr", "ADR", "wiki",
+)
+
+
+def extract_doc_files(root: Path) -> dict[str, list[Path]]:
+    """Discover agent skills, spec files, and project documentation.
+
+    Returns:
+      skills — files under .agents/ (Antigravity skill/resource definitions)
+      specs  — markdown in common spec/design/docs directories
+      docs   — remaining top-level and nested .md files
+    """
+    skills: list[Path] = []
+    specs:  list[Path] = []
+    docs:   list[Path] = []
+    seen:   set[Path]  = set()
+
+    # Skills: .agents/ directory
+    agents_dir = root / ".agents"
+    if agents_dir.is_dir():
+        for ext in ("*.md", "*.yaml", "*.yml", "*.json"):
+            for f in sorted(agents_dir.rglob(ext))[:12]:
+                if f not in seen:
+                    seen.add(f)
+                    skills.append(f)
+
+    # Specs: common spec/docs directories
+    for dirname in _SPEC_DIRS:
+        d = root / dirname
+        if d.is_dir():
+            for f in sorted(d.rglob("*.md"))[:10]:
+                if f.name not in _DOC_EXCLUDES and f not in seen:
+                    seen.add(f)
+                    specs.append(f)
+
+    # Docs: top-level *.md files not already captured
+    for f in sorted(root.glob("*.md"))[:12]:
+        if f.name not in _DOC_EXCLUDES and f not in seen:
+            seen.add(f)
+            docs.append(f)
+
+    return {"skills": skills, "specs": specs, "docs": docs}
+
+
+def build_doc_context(root: Path, doc_files: dict[str, list[Path]], max_chars: int = 8000) -> str:
+    """Build a context string from skills, specs, and doc files.
+
+    Each category is prefixed with a header so the LLM knows what it's reading.
+    Files are truncated to keep the total under max_chars.
+    Returns empty string if all categories are empty.
+    """
+    _HEADERS = {
+        "skills": "=== AGENT SKILLS (.agents/) ===",
+        "specs":  "=== SPECIFICATIONS / DESIGN DOCS ===",
+        "docs":   "=== PROJECT DOCUMENTATION ===",
+    }
+    parts: list[str] = []
+    budget = max_chars
+
+    for key, header in _HEADERS.items():
+        files = doc_files.get(key, [])
+        if not files:
+            continue
+        section_parts: list[str] = [header]
+        budget -= len(header) + 2
+        for path in files:
+            if budget <= 200:
+                break
+            try:
+                text    = path.read_text(encoding="utf-8", errors="ignore")
+                snippet = text[: min(1500, budget)]
+                h       = f"\n--- {path.relative_to(root).as_posix()} ---\n"
+                section_parts.append(h + snippet)
+                budget -= len(h) + len(snippet)
+            except Exception:
+                continue
+        if len(section_parts) > 1:
+            parts.append("\n".join(section_parts))
+
+    return "\n\n".join(parts)
+
+
 def build_analysis_context(root: Path, key_files: list[Path], max_chars: int = 3000) -> str:
     if key_files:
         parts: list[str] = []

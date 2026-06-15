@@ -9,8 +9,10 @@ from harness_core.lifecycle import default_hooks, save_hooks
 from harness_core.project_growth import bootstrap_growth
 from harness_core.project_analyzer import (
     build_analysis_context,
+    build_doc_context,
     detect_agents,
     detect_project_type,
+    extract_doc_files,
     extract_key_files,
     generate_agents_md,
     generate_initial_features,

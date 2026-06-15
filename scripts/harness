@@ -398,8 +398,19 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
     agent_sections: dict | None = None
     if research_agent != "skip":
         print()
+        # Show what extra context will be fed to the LLM
+        from harness_core.project_analyzer import extract_doc_files
+        _doc_files = extract_doc_files(target)
+        _skill_n = len(_doc_files["skills"])
+        _spec_n  = len(_doc_files["specs"])
+        _doc_n   = len(_doc_files["docs"])
+        _extras  = []
+        if _skill_n: _extras.append(f"{_skill_n} skill{'s' if _skill_n>1 else ''}")
+        if _spec_n:  _extras.append(f"{_spec_n} spec{'s' if _spec_n>1 else ''}")
+        if _doc_n:   _extras.append(f"{_doc_n} doc{'s' if _doc_n>1 else ''}")
+        _extra_str = f"  {DIM}+ {', '.join(_extras)}{R}" if _extras else f"  {DIM}(no skills/specs/docs found){R}"
         _info(f"Running deep research with  {B}{research_agent}{R} ...")
-        _info(f"{DIM}This may take up to 2 minutes — the agent reads key files...{R}")
+        _info(f"{DIM}Reading source files{R}{_extra_str}")
         try:
             from harness_core.agent_research import run_agent_research
             agent_sections = run_agent_research(target, research_agent, analysis)

@@ -322,6 +322,39 @@ _JSON_SCHEMA = """{
       "rules": []
     },
     {
+      "id": "skills",
+      "title": "Agent skills",
+      "kicker": "Automation",
+      "type": "rules",
+      "summary": "Automated skills and workflows defined in .agents/ for this project. Leave empty array if none found.",
+      "facts": [],
+      "rules": [
+        {"id": "skill-name", "content": "what this skill does and when to use it", "note": "invoke with: /skill-name or harness run <skill>"}
+      ]
+    },
+    {
+      "id": "specifications",
+      "title": "Specifications",
+      "kicker": "Requirements & design",
+      "type": "rules",
+      "summary": "Key specs, requirements, and design decisions found in docs/specs directories. Leave empty array if none found.",
+      "facts": [],
+      "rules": [
+        {"id": "path/to/spec.md", "content": "what this spec defines — scope and key decisions", "note": "status: draft / approved / superseded"}
+      ]
+    },
+    {
+      "id": "documentation",
+      "title": "Documentation",
+      "kicker": "Project docs",
+      "type": "rules",
+      "summary": "Existing project documentation files and what each covers. Leave empty array if none found.",
+      "facts": [],
+      "rules": [
+        {"id": "path/to/doc.md", "content": "what this document covers and who should read it", "note": "audience: dev / ops / user / all"}
+      ]
+    },
+    {
       "id": "open_questions",
       "title": "Open questions",
       "kicker": "Tech debt & unknowns",
@@ -336,7 +369,12 @@ _JSON_SCHEMA = """{
 }"""
 
 
-def _build_research_prompt(root: Path, analysis: dict[str, Any], context: str) -> str:
+def _build_research_prompt(
+    root: Path,
+    analysis: dict[str, Any],
+    context: str,
+    doc_context: str = "",
+) -> str:
     project_name = analysis.get("project_name", root.name)
     language     = analysis.get("language", "unknown")
     framework    = analysis.get("framework", "") or "—"
@@ -345,6 +383,12 @@ def _build_research_prompt(root: Path, analysis: dict[str, Any], context: str) -
 
     ep_str    = ", ".join(str(e) for e in entry_points[:3]) or "—"
     agent_str = ", ".join(a.get("agent", str(a)) if isinstance(a, dict) else str(a) for a in agents[:4]) or "none"
+
+    doc_block = (
+        f"\nHere is content from agent skill definitions, specifications, and documentation files"
+        f" — use these to fill the skills, specifications, and documentation sections:\n\n"
+        f"{doc_context}\n"
+    ) if doc_context.strip() else ""
 
     return (
         f"Please help document the {project_name} project for its development team.\n"
@@ -355,13 +399,16 @@ def _build_research_prompt(root: Path, analysis: dict[str, Any], context: str) -
         f"- Entry points: {ep_str}\n"
         f"- Agent configs: {agent_str}\n"
         f"\n"
-        f"Here is the content of the key files to base your analysis on:\n"
+        f"Here is the content of the key source files:\n"
         f"\n"
         f"{context}\n"
-        f"\n"
-        f"Based on the files above, please fill in this JSON documentation template with accurate,\n"
-        f"specific information about this project. Replace the placeholder text with real findings.\n"
-        f"Keep each 'id' field unchanged. Respond with the completed JSON:\n"
+        f"{doc_block}\n"
+        f"Based on ALL the files above (source code, skills, specs, docs), fill in this JSON\n"
+        f"documentation template with accurate, specific information about this project.\n"
+        f"Replace placeholder text with real findings from the files.\n"
+        f"For sections where no relevant files were found (skills, specifications, documentation),\n"
+        f"set rules to an empty array [] and write a brief summary saying none were found.\n"
+        f"Keep each 'id' field unchanged. Respond with the completed JSON only:\n"
         f"\n"
         f"{_JSON_SCHEMA}\n"
     )
@@ -375,11 +422,18 @@ def run_agent_research(
     analysis: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Run agent-driven codebase research. Returns parsed dict with 'sections' or None."""
-    from harness_core.project_analyzer import build_analysis_context, extract_key_files
+    from harness_core.project_analyzer import (
+        build_analysis_context,
+        build_doc_context,
+        extract_doc_files,
+        extract_key_files,
+    )
 
-    key_files = extract_key_files(root)
-    context   = build_analysis_context(root, key_files)
-    prompt    = _build_research_prompt(root, analysis, context)
+    key_files   = extract_key_files(root)
+    context     = build_analysis_context(root, key_files)
+    doc_files   = extract_doc_files(root)
+    doc_context = build_doc_context(root, doc_files)
+    prompt      = _build_research_prompt(root, analysis, context, doc_context)
 
     raw: str | None = None
     if agent_name == "claude":
