@@ -12,6 +12,7 @@ from harness_core.project_analyzer import (
     detect_agents,
     detect_project_type,
     extract_key_files,
+    generate_agents_md,
     generate_initial_features,
     generate_initial_memories,
     generate_mcp_config,
@@ -232,6 +233,19 @@ def init_project_full(
         created.append(str(schema_path))
     else:
         created.append(str(target_root / ".harness" / "mcp_schema.md"))
+
+    # ── generate AGENTS.md (and CODEX.md) via LLM if they don't exist ───────────
+    # inject_agent_instructions() only injects into existing files, so we must
+    # create these before calling it.  Ollama is tried first; template fallback.
+    if not dry_run:
+        generated: list[str] = []
+        for fname in ("AGENTS.md", "CODEX.md"):
+            p = target_root / fname
+            if not p.exists():
+                content = generate_agents_md(analysis, target_root)
+                p.write_text(content + "\n", encoding="utf-8")
+                created.append(str(p))
+                generated.append(fname)
 
     # ── inject mandatory first-call rule into agent instruction files ─────────
     if not dry_run:

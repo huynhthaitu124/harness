@@ -532,6 +532,104 @@ def seed_memories(memory_path: Path, memories: list[dict[str, Any]]) -> list[dic
     return results
 
 
+def _call_ollama(prompt: str, timeout: int = 60) -> str | None:
+    """Call Ollama /api/generate. Returns text response or None on any failure."""
+    import json as _json
+    import os as _os
+    import urllib.error
+    import urllib.request
+    host    = _os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    payload = _json.dumps({"model": "llama3.2", "prompt": prompt, "stream": False}).encode()
+    try:
+        req = urllib.request.Request(
+            f"{host}/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read())
+            return data.get("response", "").strip() or None
+    except Exception:
+        return None
+
+
+def _agents_md_prompt(analysis: dict[str, Any], root: Path) -> str:
+    project_name = analysis.get("project_name", root.name)
+    language     = analysis.get("language", "unknown")
+    framework    = analysis.get("framework", "")
+    entry_points = analysis.get("entry_points", [])
+    context      = (analysis.get("context_snippet") or "")[:2000]
+
+    fw  = f" / {framework}" if framework else ""
+    eps = ", ".join(entry_points[:6]) if entry_points else "unknown"
+
+    return f"""\
+Write a concise AGENTS.md for the software project "{project_name}".
+
+Tech stack : {language}{fw}
+Entry points: {eps}
+
+Project context (key file excerpts):
+{context}
+
+Rules:
+- Under 250 words
+- Markdown, no triple-backtick code blocks around the whole output
+- Cover: (1) one-paragraph project overview, (2) essential build/test/run commands \
+in a fenced block, (3) key conventions, (4) important source directories
+- Be specific to THIS project; do NOT use placeholder text like "(add here)"
+- If you cannot determine something from the context, omit that section entirely
+- Do NOT include a harness or MCP section — that is injected separately
+
+Return only the markdown, no preamble or commentary.\
+"""
+
+
+def generate_agents_md(analysis: dict[str, Any], root: Path) -> str:
+    """Generate AGENTS.md for the target project.
+
+    Tries Ollama first; falls back to a smart template when Ollama is
+    unavailable or returns an empty response.  The harness block is NOT
+    included here — it is appended by inject_agent_instructions() afterward.
+    """
+    llm = _call_ollama(_agents_md_prompt(analysis, root))
+    if llm and len(llm.strip()) > 80:
+        return llm.strip()
+
+    # Template fallback
+    project_name = analysis.get("project_name", root.name)
+    language     = analysis.get("language", "unknown")
+    framework    = analysis.get("framework", "")
+    entry_points = analysis.get("entry_points", [])
+
+    fw_line  = f" ({framework})" if framework else ""
+    ep_block = "\n".join(f"- `{ep}`" for ep in entry_points[:6]) if entry_points else "- _(see project root)_"
+
+    return f"""\
+# {project_name}
+
+{project_name} is a {language}{fw_line} project.
+
+## Build & Test
+
+```bash
+# Add build, test, and run commands specific to this project
+```
+
+## Conventions
+
+- Language: **{language}**{"  |  Framework: **" + framework + "**" if framework else ""}
+
+## Entry Points
+
+{ep_block}
+
+## Key Directories
+
+_(Document the main source directories and their purpose.)_
+"""
+
+
 def render_harness_md(analysis: dict[str, Any], harness_scripts_path: Path, project_name: str) -> str:
     language  = analysis.get("language", "unknown")
     framework = analysis.get("framework", "")
