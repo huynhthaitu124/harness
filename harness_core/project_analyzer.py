@@ -137,55 +137,136 @@ _INITIAL_FEATURES_BY_TYPE: dict[str, list[str]] = {
 }
 
 
+_DETECT_SKIP = frozenset({
+    ".git", "node_modules", ".next", ".nuxt", ".svelte-kit",
+    "dist", "build", "__pycache__", ".venv", "venv",
+    "bin", "obj", "out", "target", "coverage", ".nyc_output",
+    "vendor", "production_artifacts", ".harness",
+})
+
+# Priority order when scoring: higher = wins tie-breaks.
+# Languages with explicit project files beat generic globs.
+_LANG_PRIORITY: dict[str, int] = {
+    "csharp":      100,
+    "fsharp":      100,
+    "visualbasic": 100,
+    "java":         90,
+    "python":       90,
+    "go":           90,
+    "rust":         90,
+    "dart":         80,
+    "ruby":         80,
+    "elixir":       80,
+    "php":          80,
+    "typescript":   50,
+    "javascript":   40,
+}
+
+
+def _scan_languages(root: Path) -> dict[str, dict]:
+    """Scan entire repo and return score info per language.
+
+    Returns {lang: {"score": int, "config_file": str, "matches": [Path]}}
+    Single file-tree walk — O(N) regardless of how many patterns we check.
+    """
+    import fnmatch
+
+    results: dict[str, dict] = {}
+
+    def _skip_dir(name: str) -> bool:
+        return name in _DETECT_SKIP
+
+    # Build a fast name→[(lang, fw, pattern)] lookup
+    exact_patterns: dict[str, list[tuple[str, str, str]]] = {}
+    glob_patterns:  list[tuple[str, str, str]] = []   # (pattern, lang, fw)
+    for pattern, lang, fw in _LANGUAGE_GLOB_PATTERNS:
+        if "*" in pattern or "?" in pattern:
+            glob_patterns.append((pattern, lang, fw))
+        else:
+            exact_patterns.setdefault(pattern, []).append((lang, fw, pattern))
+
+    # Root-level config files — check before walking (highest weight)
+    for filename, (lang, fw) in _LANGUAGE_CONFIG_FILES.items():
+        p = root / filename
+        if p.exists():
+            r = results.setdefault(lang, {"score": 0, "config_file": "", "fw": fw, "matches": []})
+            r["score"]      += 200
+            r["config_file"] = r["config_file"] or filename
+            r["matches"].append(p)
+
+    # Single os.walk — prune skip dirs immediately
+    import os
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not _skip_dir(d)]
+        dp    = Path(dirpath)
+        depth = len(dp.relative_to(root).parts)
+
+        for name in filenames:
+            p = dp / name
+
+            # exact pattern match (e.g. tsconfig.json, pyproject.toml)
+            if name in exact_patterns:
+                for lang, fw, pat in exact_patterns[name]:
+                    weight = max(5, 60 - depth * 8)
+                    r = results.setdefault(lang, {"score": 0, "config_file": "", "fw": fw, "matches": []})
+                    r["score"]      += weight
+                    r["config_file"] = r["config_file"] or name
+                    r["matches"].append(p)
+
+            # glob pattern match (e.g. *.csproj, *.sln)
+            for pattern, lang, fw in glob_patterns:
+                if fnmatch.fnmatch(name, pattern):
+                    weight = max(5, 60 - depth * 8)
+                    r = results.setdefault(lang, {"score": 0, "config_file": "", "fw": fw, "matches": []})
+                    r["score"]      += weight
+                    r["config_file"] = r["config_file"] or name
+                    r["matches"].append(p)
+
+    return results
+
+
 def detect_project_type(root: Path) -> dict[str, Any]:
-    language = "unknown"
-    framework = ""
-    config_file = ""
+    lang_scores = _scan_languages(root)
+
+    if not lang_scores:
+        return {
+            "language": "unknown", "framework": "", "config_file": "",
+            "entry_points": [], "secondary_languages": [],
+        }
+
+    # Pick winner: highest score, tie-broken by _LANG_PRIORITY
+    def _rank(item):
+        lang, info = item
+        return (info["score"], _LANG_PRIORITY.get(lang, 0))
+
+    ranked = sorted(lang_scores.items(), key=_rank, reverse=True)
+    primary_lang, primary_info = ranked[0]
+
+    language    = primary_lang
+    framework   = primary_info.get("fw", "")
+    config_file = primary_info["config_file"]
     entry_points: list[str] = []
 
-    for filename, (lang, fw) in _LANGUAGE_CONFIG_FILES.items():
-        if (root / filename).exists():
-            language = lang
-            framework = fw
-            config_file = filename
-            break
+    # ── per-language post-processing ──────────────────────────────────────────
 
-    # Glob-based fallback: check root first, then one level deep, then full rglob
-    # (rglob on large repos is slow but only reached when root-level detection fails)
-    if language == "unknown":
-        _SKIP = {".git", "node_modules", ".next", "dist", "build", "__pycache__",
-                 ".venv", "venv", "bin", "obj", "production_artifacts"}
-        for pattern, lang, fw in _LANGUAGE_GLOB_PATTERNS:
-            # root level
-            matches = [m for m in root.glob(pattern)
-                       if not any(p in _SKIP for p in m.parts)]
-            if not matches:
-                # one level deep (e.g. monorepo subdirs)
-                matches = [m for m in root.glob(f"*/{pattern}")
-                           if not any(p in _SKIP for p in m.parts)]
-            if not matches:
-                # full recursive (capped at first 200 candidates to stay fast)
-                matches = [m for m in root.rglob(pattern)
-                           if not any(p in _SKIP for p in m.parts)][:200]
-            if matches:
-                language = lang
-                framework = fw
-                config_file = matches[0].name
-                break
-
-    if language == "javascript" and config_file == "package.json":
-        try:
-            pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
-            deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
-            for hint, (_, fw) in _FRAMEWORK_HINTS.items():
-                if any(hint in k.lower() for k in deps):
-                    framework = fw
-                    break
-            main = pkg.get("main") or pkg.get("exports", {})
-            if isinstance(main, str):
-                entry_points.append(main)
-        except Exception:
-            pass
+    if language in ("javascript", "typescript"):
+        # look for package.json at root or first subdir
+        for pkg_path in [root / "package.json"] + list(root.glob("*/package.json"))[:3]:
+            if pkg_path.exists():
+                try:
+                    pkg  = json.loads(pkg_path.read_text(encoding="utf-8"))
+                    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                    for hint, (_, fw) in _FRAMEWORK_HINTS.items():
+                        if any(hint in k.lower() for k in deps):
+                            framework = fw
+                            break
+                    main = pkg.get("main")
+                    if isinstance(main, str):
+                        entry_points.append(main)
+                    if framework:
+                        break
+                except Exception:
+                    pass
 
     if language == "python":
         for candidate in ("main.py", "app.py", "src/main.py", "src/app.py"):
@@ -193,7 +274,7 @@ def detect_project_type(root: Path) -> dict[str, Any]:
                 entry_points.append(candidate)
                 break
         readme_lower = ""
-        for readme in root.glob("README*"):
+        for readme in list(root.glob("README*"))[:1]:
             try:
                 readme_lower = readme.read_text(encoding="utf-8", errors="ignore").lower()
             except Exception:
@@ -205,40 +286,39 @@ def detect_project_type(root: Path) -> dict[str, Any]:
 
     if language == "csharp":
         doc_text = ""
-        for docfile in ("AGENTS.md", "CLAUDE.md", "README.md", "README.txt"):
-            p = root / docfile
-            if p.exists():
-                try:
-                    doc_text += p.read_text(encoding="utf-8", errors="ignore").lower()
-                except Exception:
-                    pass
+        for docfile in ("AGENTS.md", "CLAUDE.md", "README.md"):
+            for p in [root / docfile] + list(root.glob(f"*/{docfile}"))[:2]:
+                if p.exists():
+                    try:
+                        doc_text += p.read_text(encoding="utf-8", errors="ignore").lower()
+                    except Exception:
+                        pass
         for hint, fw_name in _CSHARP_FRAMEWORK_HINTS:
             if hint in doc_text and not framework:
                 framework = fw_name
                 break
-        _SKIP = {".git", "node_modules", ".next", "dist", "build", "__pycache__",
-                 ".venv", "venv", "bin", "obj", "production_artifacts"}
-        sln_files = [m for m in root.rglob("*.sln")
-                     if not any(p in _SKIP for p in m.parts)]
+        sln_matches = primary_info["matches"]
+        sln_files   = [m for m in sln_matches if m.suffix == ".sln"]
         if sln_files:
             config_file = sln_files[0].name
             entry_points.extend(str(s.relative_to(root)) for s in sln_files[:3])
+        elif primary_info["matches"]:
+            entry_points.extend(
+                str(m.relative_to(root)) for m in primary_info["matches"][:3]
+                if m.suffix == ".csproj"
+            )
 
-    # ── monorepo secondary language detection ─────────────────────────────────
-    # If primary language found, check if there's also a web frontend
+    # ── secondary languages (monorepo) ────────────────────────────────────────
     secondary_langs: list[str] = []
-    if language == "csharp":
-        if list(root.rglob("package.json"))[:1]:
-            secondary_langs.append("typescript")
-    elif language in ("python", "go", "rust"):
-        if list(root.rglob("package.json"))[:1]:
-            secondary_langs.append("javascript")
+    for lang, info in ranked[1:4]:
+        if info["score"] >= 20 and lang != language:
+            secondary_langs.append(lang)
 
     return {
-        "language": language,
-        "framework": framework,
-        "config_file": config_file,
-        "entry_points": entry_points,
+        "language":           language,
+        "framework":          framework,
+        "config_file":        config_file,
+        "entry_points":       entry_points,
         "secondary_languages": secondary_langs,
     }
 
