@@ -148,6 +148,7 @@ def detect_agent_clis() -> list[dict[str, Any]]:
     })
 
     # ── Antigravity CLI ───────────────────────────────────────────────────────
+    # Install: curl -fsSL https://antigravity.google/cli/install.sh | bash  (macOS/Linux)
     ag_path  = shutil.which("antigravity")
     ag_inst  = bool(ag_path)
     ag_auth  = False
@@ -159,7 +160,7 @@ def detect_agent_clis() -> list[dict[str, Any]]:
             )
             ag_auth = _r.returncode == 0 or "logged" in (_r.stdout + _r.stderr).lower()
         except Exception:
-            ag_auth = False  # require explicit auth confirmation
+            ag_auth = False
     ag_version = ""
     if ag_inst:
         try:
@@ -169,6 +170,12 @@ def detect_agent_clis() -> list[dict[str, Any]]:
             ag_version = (_vr.stdout + _vr.stderr).strip().split("\n")[0][:40]
         except Exception:
             pass
+    import sys as _sys
+    _ag_install_cmd = (
+        ["bash", "-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"]
+        if _sys.platform != "win32" else
+        ["powershell", "-Command", "irm https://antigravity.google/cli/install.ps1 | iex"]
+    )
     agents.append({
         "name":          "antigravity",
         "label":         "Antigravity CLI",
@@ -176,9 +183,10 @@ def detect_agent_clis() -> list[dict[str, Any]]:
         "installed":     ag_inst,
         "authed":        ag_auth,
         "detail":        (ag_version or ag_path or "ready") if ag_inst
-                         else "download from antigravity.google",
+                         else "curl -fsSL https://antigravity.google/cli/install.sh | bash",
         "model":         None,
-        "install_how":   "url",
+        "install_how":   "curl",
+        "install_cmd":   _ag_install_cmd,
         "install_pkg":   None,
         "auth_cmd":      ["antigravity", "auth", "login"],
         "auth_url":      "https://antigravity.google/download#antigravity-cli",
@@ -186,7 +194,7 @@ def detect_agent_clis() -> list[dict[str, Any]]:
                          "Your browser will open for OAuth — log in and the token is stored automatically.",
         "docs_url":      "https://antigravity.google/download#antigravity-cli",
         "install_steps": [
-            "# Download from https://antigravity.google/download#antigravity-cli",
+            "curl -fsSL https://antigravity.google/cli/install.sh | bash",
             "antigravity auth login  # browser redirect — sign in with Google",
             "antigravity --version  # verify",
         ],

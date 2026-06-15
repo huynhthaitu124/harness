@@ -574,8 +574,37 @@ def run_agents_cmd(target: Path) -> int:  # noqa: C901
                 fresh_install = True
                 agent = next((a for a in detect_agent_clis() if a["name"] == name), agent)
 
+            elif how == "curl":
+                # Auto-install via curl script
+                import subprocess as _sp
+                install_cmd = agent.get("install_cmd", [])
+                cmd_display = agent.get("install_steps", [""])[0]
+                if not install_cmd:
+                    _warn(f"No install command defined for {label}")
+                    return False
+                if not confirm(f"Run:  {B}{cmd_display}{R}  now?", default=True):
+                    _info(f"Run manually:  {cmd_display}")
+                    return False
+                print()
+                _info(f"Installing  {B}{label}{R}  ...")
+                try:
+                    result = _sp.run(install_cmd, check=False)
+                    if result.returncode != 0:
+                        _warn("Install script returned an error — check output above")
+                        return False
+                except Exception as exc:
+                    _warn(f"Install failed: {exc}")
+                    return False
+                # Re-detect after install
+                agent = next((a for a in detect_agent_clis() if a["name"] == name), agent)
+                if not agent.get("installed"):
+                    _warn(f"{label} not detected after install — open a new shell and retry")
+                    return False
+                _ok(f"{label} installed")
+                fresh_install = True
+
             elif how in ("url", None):
-                # Open download page, then loop until binary is detected
+                # Manual download — loop until binary is detected
                 url = agent.get("docs_url") or agent.get("auth_url") or ""
                 if url:
                     _info(f"Download from:  {B}{url}{R}")
