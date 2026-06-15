@@ -180,6 +180,62 @@ def confirm(prompt: str, default: bool = True) -> bool:
         return False
 
 
+# ── pick2 (← →) ──────────────────────────────────────────────────────────────
+
+def pick2(
+    prompt: str,
+    left_label:  str, left_desc:  str,
+    right_label: str, right_desc: str,
+) -> str | None:
+    """Left/right two-option picker.  Returns 'left', 'right', or None (Esc/q)."""
+    if not _is_tty():
+        print(f"\n{prompt}")
+        print(f"  1. {left_label}  —  {left_desc}")
+        print(f"  2. {right_label}  —  {right_desc}")
+        raw = input("Enter 1 or 2: ").strip()
+        if raw == "1": return "left"
+        if raw == "2": return "right"
+        return None
+
+    choice = "left"   # start on left
+
+    def _render() -> None:
+        sys.stdout.write(f"\r{_clr()}{BOLD}{prompt}{RESET}\n")
+        if choice == "left":
+            l_fmt = f"{CYAN}{BOLD}◀ {left_label}{RESET}  {DIM}{left_desc}{RESET}"
+            r_fmt = f"    {DIM}{right_label}{RESET}  {DIM}{right_desc}{RESET}"
+        else:
+            l_fmt = f"    {DIM}{left_label}{RESET}  {DIM}{left_desc}{RESET}"
+            r_fmt = f"{CYAN}{BOLD}{right_label} ▶{RESET}  {DIM}{right_desc}{RESET}"
+        sys.stdout.write(f"  {l_fmt}\n")
+        sys.stdout.write(f"  {r_fmt}\n")
+        sys.stdout.write(f"{DIM}◀ ▶ navigate  •  enter select  •  q skip{RESET}  ")
+        sys.stdout.flush()
+
+    sys.stdout.write(_hide_cursor() + "\n")
+    _render()
+
+    # rows printed: prompt + left + right + hint = 4
+    _rows = 4
+
+    try:
+        while True:
+            key = _read_key()
+            if key == "\x1b[D":           # ←
+                choice = "left";  sys.stdout.write(_up(_rows)); _render()
+            elif key == "\x1b[C":         # →
+                choice = "right"; sys.stdout.write(_up(_rows)); _render()
+            elif key in ("\r", "\n"):
+                sys.stdout.write(_show_cursor() + "\n")
+                return choice
+            elif key in ("q", "Q", "\x1b"):
+                sys.stdout.write(_show_cursor() + "\n")
+                return None
+    except KeyboardInterrupt:
+        sys.stdout.write(_show_cursor() + "\n")
+        return None
+
+
 # ── select (↑↓) ──────────────────────────────────────────────────────────────
 
 def select(prompt: str, options: list[str], default: int = 0) -> str | None:

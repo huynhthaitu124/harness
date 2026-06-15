@@ -488,6 +488,83 @@ def run_init(target: Path, *, dry_run: bool = False, skip_index: bool = False,
     return 0
 
 
+def run_update(target: Path) -> int:
+    """harness update — pull latest harness, optionally refresh project files."""
+    from harness_core.tui import pick2
+
+    print()
+    choice = pick2(
+        "Harness update",
+        left_label  = "Update harness",
+        left_desc   = "pull latest from GitHub only",
+        right_label = "Update + refresh project",
+        right_desc  = "pull + regenerate docs/MCP for this project",
+    )
+    if choice is None:
+        print("  cancelled")
+        return 0
+
+    update_project = (choice == "right")
+
+    # ── Step 1: git pull in HARNESS_ROOT ─────────────────────────────────────
+    import subprocess
+    print()
+    _info("Pulling latest harness from GitHub ...")
+
+    result = subprocess.run(
+        ["git", "-C", str(HARNESS_ROOT), "pull", "--ff-only", "origin", "main"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        _warn("git pull failed:")
+        print(f"  {result.stderr.strip()}")
+        return 1
+
+    output = result.stdout.strip()
+    if "Already up to date" in output:
+        _ok("already up to date")
+    else:
+        for line in output.splitlines():
+            _ok(line)
+
+    if not update_project:
+        print()
+        _info("Done.  Run  harness mcp register  in each project to push new tool schemas.")
+        return 0
+
+    # ── Step 2: refresh project files (preserve data) ────────────────────────
+    project_json = target / ".harness" / "project.json"
+    if not project_json.exists():
+        print()
+        _warn(f"project not initialized — run  harness init  first: {target}")
+        return 1
+
+    print()
+    _info(f"Refreshing project files for  {B}{target.name}{R} ...")
+    _info(f"{DIM}memory, index, context_packs, workflow — preserved{R}")
+    print()
+
+    try:
+        from harness_core.project_init import refresh_project_files
+        r = refresh_project_files(target, HARNESS_ROOT)
+    except Exception as exc:
+        _warn(f"refresh failed: {exc}")
+        return 1
+
+    for path in r.get("refreshed", []):
+        rel = path.replace(str(target) + "/", "").replace(str(Path.home()), "~")
+        _ok(rel)
+
+    preserved = r.get("preserved", [])
+    if preserved:
+        print()
+        _info(f"Preserved ({len(preserved)}):  {DIM}{',  '.join(preserved)}{R}")
+
+    print()
+    _info("Restart agent IDE to reload the updated MCP server.")
+    return 0
+
+
 def run_eject(target: Path, *, dry_run: bool = False) -> int:
     removed: list[str] = []
 
@@ -1306,6 +1383,8 @@ _MENU_ITEMS = [
                 "Memory records, feature progress, routing policy"),
     ("analyze", "Analyze project and print profile",
                 "Language detection, keywords, key files — JSON output"),
+    ("update",  "Update harness + optionally refresh project",
+                "Pull latest from GitHub; regenerate docs/MCP schema for this project"),
     ("eject",   "Remove harness config, keep data",
                 "Deletes .harness/, HARNESS.md, HARNESS.html from the project"),
     ("run",     "Run a ticket task with pre-loaded RAG context",
@@ -1382,6 +1461,8 @@ def launch_menu(target: Path) -> None:
         try:
             if chosen == "init":
                 run_init(target)
+            elif chosen == "update":
+                run_update(target)
             elif chosen == "center":
                 _pick_center(target)
             elif chosen == "eject":
@@ -1464,6 +1545,8 @@ def main() -> int:
     p_run.add_argument("--agent", default=None, metavar="NAME", help="Agent to use: claude, codex, ollama:<model>")
     p_run.add_argument("path", nargs="?", default=None, metavar="PATH")
 
+    sub.add_parser("update",  help="Pull latest harness from GitHub; optionally refresh project files")
+
     p_mcp = sub.add_parser("mcp", help="Manage MCP server registration across all agent configs")
     mcp_sub = p_mcp.add_subparsers(dest="mcp_action", metavar="<status|register|unregister>", required=True)
     mcp_sub.add_parser("status",     help="Show registration state in each agent's config file")
@@ -1471,7 +1554,7 @@ def main() -> int:
     mcp_sub.add_parser("unregister", help="Remove harness from all agent config files")
 
     for name, p in sub.choices.items():
-        if name not in {"center", "rag-pack", "run", "mcp"}:
+        if name not in {"center", "rag-pack", "run", "mcp", "update"}:
             p.add_argument("path", nargs="?", default=None, metavar="PATH")
 
     args = parser.parse_args()
@@ -1502,6 +1585,8 @@ def main() -> int:
         return run_status(target)
     if args.command == "run":
         return run_ticket(target, args.task, ticket_id=getattr(args, "ticket", None), agent_name=getattr(args, "agent", None))
+    if args.command == "update":
+        return run_update(target)
     if args.command == "mcp":
         return run_mcp(target, args.mcp_action)
 

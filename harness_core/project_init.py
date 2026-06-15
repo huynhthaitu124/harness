@@ -290,3 +290,104 @@ def init_project_full(
         "analysis":    {k: v for k, v in analysis.items() if k != "initial_memories"},
         "created":     created,
     }
+
+
+# ── Data preserved by refresh (never overwritten) ─────────────────────────────
+_PRESERVE = {
+    ".harness/memory.jsonl",
+    ".harness/index.json",
+    ".harness/workflow.json",
+    ".harness/agent_research.json",
+    ".harness/feature_list.json",
+    ".harness/hooks.json",
+    ".harness/context_packs",   # directory
+    ".harness/indexes",         # directory
+    ".harness/trajectories",    # directory
+    ".harness/telemetry",       # directory
+    ".harness/growth",          # directory
+}
+
+
+def refresh_project_files(target_root: Path, harness_root: Path) -> dict[str, Any]:
+    """Regenerate docs and MCP config after a harness upgrade.
+
+    Rewrites:  HARNESS.md, HARNESS.html, .harness/mcp_schema.md,
+               CLAUDE.md, AGENTS.md, GEMINI.md, .mcp.json, ~/.gemini/* configs
+    Preserves: memory, index, context_packs, workflow, trajectories, growth, ...
+    """
+    hd = target_root / ".harness"
+    refreshed: list[str] = []
+    skipped:   list[str] = []
+
+    # ── load existing project metadata ────────────────────────────────────────
+    project_json = hd / "project.json"
+    if not project_json.exists():
+        raise FileNotFoundError(
+            f".harness/project.json not found — run  harness init  first: {target_root}"
+        )
+    meta = json.loads(project_json.read_text(encoding="utf-8"))
+    project_name = meta.get("project_name", target_root.name)
+
+    # Re-run heuristic analysis (fast, no agent) to pick up language/framework changes
+    analysis = analyze_project(target_root)
+    # Preserve harness_root from original init in case project was moved
+    meta["harness_root"] = str(harness_root)
+    meta["analyzed_at"]  = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc
+    ).isoformat()
+    project_json.write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    refreshed.append(str(project_json))
+
+    # ── regenerate MCP schema first (agent files embed Tier-1 table from it) ──
+    from harness_core.mcp_schema import write_mcp_schema
+    schema_path = write_mcp_schema(target_root, harness_root)
+    refreshed.append(str(schema_path))
+
+    # ── re-inject agent instruction files ────────────────────────────────────
+    updated = inject_agent_instructions(target_root, harness_root)
+    refreshed.extend(str(target_root / f) for f in updated)
+
+    # ── re-register MCP in agent config files ────────────────────────────────
+    from harness_core.mcp_registration import register_mcp_project, register_mcp_global
+    mcp_written = register_mcp_project(target_root, harness_root)
+    mcp_written += register_mcp_global(harness_root)
+    refreshed.extend(mcp_written)
+
+    # ── regenerate HARNESS.md ─────────────────────────────────────────────────
+    harness_md = target_root / "HARNESS.md"
+    harness_md.write_text(
+        render_harness_md(analysis, harness_root / "scripts", project_name),
+        encoding="utf-8",
+    )
+    refreshed.append(str(harness_md))
+
+    # ── load preserved workflow + agent research for HARNESS.html ─────────────
+    from harness_core.workflow_steps import load_workflow
+    from harness_core.agent_research import load_research
+    workflow       = load_workflow(target_root)
+    agent_sections = load_research(target_root)
+
+    # ── regenerate HARNESS.html ───────────────────────────────────────────────
+    harness_html = target_root / "HARNESS.html"
+    harness_html.write_text(
+        render_harness_html(
+            analysis, project_name, harness_root / "scripts",
+            agent_sections=agent_sections, workflow=workflow,
+        ),
+        encoding="utf-8",
+    )
+    refreshed.append(str(harness_html))
+
+    # report what was intentionally left alone
+    for rel in sorted(_PRESERVE):
+        p = target_root / rel
+        if p.exists():
+            skipped.append(rel)
+
+    return {
+        "root":      str(target_root),
+        "refreshed": refreshed,
+        "preserved": skipped,
+    }
