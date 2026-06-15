@@ -868,6 +868,71 @@ def run_status(target: Path) -> int:
     return 0
 
 
+def run_mcp(target: Path, action: str) -> int:
+    """harness mcp status|register|unregister"""
+    from harness_core.mcp_registration import (
+        mcp_registration_status, register_mcp_project, register_mcp_global, unregister_mcp,
+    )
+
+    project_json = target / ".harness" / "project.json"
+    if not project_json.exists():
+        _warn("not initialized — run  harness init  first")
+        return 1
+
+    meta = json.loads(project_json.read_text(encoding="utf-8"))
+    harness_root = Path(meta.get("harness_root", HARNESS_ROOT))
+
+    if action == "status":
+        status = mcp_registration_status(target, harness_root)
+        print()
+        _labels = {
+            "claude_project":      "Claude (project)",
+            "antigravity_ide":     "Antigravity IDE",
+            "antigravity_global":  "Antigravity CLI",
+            "gemini_config":       "Gemini CLI",
+        }
+        all_ok = True
+        for key, label in _labels.items():
+            val = status.get(key, "unknown")
+            if val == "registered":
+                _row(label, f"{G}registered{R}")
+            elif val == "file absent":
+                _row(label, f"{DIM}not installed{R}")
+            else:
+                _row(label, f"{Y}missing{R}  — run:  harness mcp register")
+                all_ok = False
+        print()
+        if not all_ok:
+            _info("Run  harness mcp register  to register in all installed agents.")
+        return 0
+
+    if action == "register":
+        written = register_mcp_project(target, harness_root)
+        written += register_mcp_global(harness_root)
+        print()
+        if written:
+            for p in written:
+                _ok(p)
+            print()
+            _info("Restart your agent IDE / terminal session for the change to take effect.")
+        else:
+            _warn("no files written — check permissions or re-run after installing agents")
+        return 0
+
+    if action == "unregister":
+        removed = unregister_mcp(target)
+        print()
+        if removed:
+            for p in removed:
+                _ok(f"removed harness from  {p}")
+        else:
+            _info("harness was not registered in any config files")
+        return 0
+
+    print(f"unknown mcp action: {action}", file=sys.stderr)
+    return 1
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Curated model catalogue
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1329,8 +1394,14 @@ def main() -> int:
     p_run.add_argument("--agent", default=None, metavar="NAME", help="Agent to use: claude, codex, ollama:<model>")
     p_run.add_argument("path", nargs="?", default=None, metavar="PATH")
 
+    p_mcp = sub.add_parser("mcp", help="Manage MCP server registration across all agent configs")
+    mcp_sub = p_mcp.add_subparsers(dest="mcp_action", metavar="<status|register|unregister>", required=True)
+    mcp_sub.add_parser("status",     help="Show registration state in each agent's config file")
+    mcp_sub.add_parser("register",   help="Register harness MCP server in all installed agent configs")
+    mcp_sub.add_parser("unregister", help="Remove harness from all agent config files")
+
     for name, p in sub.choices.items():
-        if name not in {"center", "rag-pack", "run"}:
+        if name not in {"center", "rag-pack", "run", "mcp"}:
             p.add_argument("path", nargs="?", default=None, metavar="PATH")
 
     args = parser.parse_args()
@@ -1361,6 +1432,8 @@ def main() -> int:
         return run_status(target)
     if args.command == "run":
         return run_ticket(target, args.task, ticket_id=getattr(args, "ticket", None), agent_name=getattr(args, "agent", None))
+    if args.command == "mcp":
+        return run_mcp(target, args.mcp_action)
 
     parser.print_help()
     return 0

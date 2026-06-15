@@ -242,6 +242,14 @@ def init_project_full(
     if not dry_run:
         inject_agent_instructions(target_root)
 
+    # ── register MCP server in agent config files ─────────────────────────────
+    if not dry_run:
+        from harness_core.mcp_registration import register_mcp_project, register_mcp_global
+        mcp_written = register_mcp_project(target_root, harness_root)
+        mcp_written += register_mcp_global(harness_root)
+        for p in mcp_written:
+            created.append(p)
+
     # ── save agent research if provided ──────────────────────────────────────
     if agent_sections and not dry_run:
         from harness_core.agent_research import save_research

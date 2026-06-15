@@ -67,8 +67,29 @@ from harness_core.token_experiment import ingest_claude_result, ingest_codex_jso
 from harness_core.token_ledger import record_usage, summarize_usage
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE_PATH = Path(os.environ.get("HARNESS_STATE_PATH", ROOT / ".harness" / "state.json"))
-ARTIFACTS_DIR = Path(os.environ.get("HARNESS_ARTIFACTS_DIR", ROOT / ".harness"))
+
+def _resolve_artifacts_dir() -> Path:
+    """Resolve project .harness dir.
+
+    Priority:
+    1. HARNESS_ARTIFACTS_DIR env var (set per-project in mcp.json)
+    2. .harness/ in cwd — works when agent launches server from project root
+    3. .harness/ in any parent of cwd — monorepo support
+    4. Harness repo's own .harness/ as last-resort fallback
+    """
+    if env := os.environ.get("HARNESS_ARTIFACTS_DIR"):
+        return Path(env).expanduser()
+    cwd = Path.cwd()
+    for candidate in [cwd, *cwd.parents]:
+        p = candidate / ".harness"
+        if p.is_dir() and (p / "state.json").exists():
+            return p
+        if candidate == candidate.parent:
+            break
+    return ROOT / ".harness"
+
+ARTIFACTS_DIR = _resolve_artifacts_dir()
+STATE_PATH = Path(os.environ.get("HARNESS_STATE_PATH", ARTIFACTS_DIR / "state.json"))
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2024-11-05")
 
 
