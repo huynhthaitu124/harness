@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.research_registry import due_research_sources, refresh_research_sources, research_registry_report  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) < 3:
+        print("usage: harness-research due|report|refresh <registry.json> [--force]", file=sys.stderr)
+        return 2
+    action = sys.argv[1]
+    path = Path(sys.argv[2]).expanduser()
+    if action == "due":
+        payload = due_research_sources(path)
+    elif action == "report":
+        payload = research_registry_report(path)
+    elif action == "refresh":
+        payload = refresh_research_sources(path, force="--force" in sys.argv[3:])
+    else:
+        print(f"unknown action: {action}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

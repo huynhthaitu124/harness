@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.autopilot import plan_next_growth_action  # noqa: E402
+from harness_core.experiment_scheduler import plan_next_experiment  # noqa: E402
+from harness_core.feature_state import next_feature  # noqa: E402
+from harness_core.harness_doctor import run_harness_doctor  # noqa: E402
+from harness_core.research_registry import research_registry_report  # noqa: E402
+from harness_core.retrieval_eval import evaluate_hybrid_dataset  # noqa: E402
+
+
+def _json_command(command: list[str]) -> dict:
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=30, check=False)
+    return json.loads(result.stdout) if result.stdout.strip() else {"ready_centers": []}
+
+
+def main() -> int:
+    readiness = _json_command([str(ROOT / "scripts" / "harness-readiness")])
+    registry_path = ROOT / "production_artifacts" / "research_registry.json"
+    dataset_path = ROOT / "production_artifacts" / "evals" / "harness-retrieval.json"
+    feature_path = ROOT / "production_artifacts" / "self_growth_feature_list.json"
+    queue_path = ROOT / "production_artifacts" / "experiment_queue.json"
+    experiments_path = ROOT / "production_artifacts" / "experiments.jsonl"
+    plan = plan_next_growth_action(
+        doctor=run_harness_doctor(ROOT),
+        readiness=readiness,
+        research=research_registry_report(registry_path) if registry_path.exists() else {"due_count": 0, "changed_count": 0},
+        retrieval_eval=evaluate_hybrid_dataset(ROOT, dataset_path, top_k=5) if dataset_path.exists() else {"verdict": "NEEDS_WORK"},
+        pending_feature=next_feature(feature_path) if feature_path.exists() else None,
+        experiment_plan=plan_next_experiment(queue_path, experiments_path, readiness),
+    )
+    print(json.dumps(plan, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

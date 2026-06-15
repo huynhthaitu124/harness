@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "harness": {
+      "command": "/Users/danchoingoinhinmuaroi/Projects/Harness/scripts/harness-mcp-server",
+      "args": [
+      ],
+      "cwd": "/Users/danchoingoinhinmuaroi/Projects/Harness",
+      "env": {
+        "HARNESS_STATE_PATH": "/Users/danchoingoinhinmuaroi/Projects/Harness/.harness/state.json",
+        "HARNESS_ARTIFACTS_DIR": "/Users/danchoingoinhinmuaroi/Projects/Harness/production_artifacts"
+      }
+    }
+  }
+}

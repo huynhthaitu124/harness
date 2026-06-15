@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.mcp_conformance import run_mcp_conformance  # noqa: E402
+
+
+def main() -> int:
+    report = run_mcp_conformance(ROOT / "scripts" / "harness-mcp-server", cwd=ROOT)
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0 if report["verdict"] == "PASS" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

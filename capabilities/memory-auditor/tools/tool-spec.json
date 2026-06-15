@@ -1,0 +1,25 @@
+{
+  "name": "memory-auditor",
+  "description": "Audit harness memories, handoffs, and rules for stale context, missing evidence, and reusable decisions.",
+  "status": "active",
+  "mcp_tools": [
+    "harness_audit_handoffs",
+    "harness_search_memory",
+    "harness_memory_pack",
+    "harness_sync_artifact_memories"
+  ],
+  "documentation": [
+    "README.md",
+    "rules/10-context-economy.md",
+    "rules/30-shared-tooling.md"
+  ],
+  "evidence_required": [
+    "tests passed",
+    "usage documented"
+  ],
+  "promoted_at": "2026-06-14T23:13:34.155589+00:00",
+  "promotion_evidence": [
+    "production_artifacts/self_growth/20260614T230924Z-local-episodic-memory-index.json",
+    "production_artifacts/self_growth/20260614T231056Z-automatic-artifact-memory-sync.json"
+  ]
+}

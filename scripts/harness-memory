@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.memory_index import build_memory_pack, record_memory, search_memories, sync_artifact_memories  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) < 4:
+        print("usage: harness-memory record <path> <source> <content> | search|pack <path> <query> | sync <root> <path>", file=sys.stderr)
+        return 2
+    action = sys.argv[1]
+    path = Path(sys.argv[2]).expanduser()
+    if action == "sync":
+        payload = sync_artifact_memories(path, Path(sys.argv[3]).expanduser())
+    elif action == "record" and len(sys.argv) >= 5:
+        payload = record_memory(path, source=sys.argv[3], content=" ".join(sys.argv[4:]), kind="note")
+    elif action == "search":
+        payload = search_memories(path, " ".join(sys.argv[3:]))
+    elif action == "pack":
+        print(build_memory_pack(path, " ".join(sys.argv[3:])))
+        return 0
+    else:
+        return 2
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

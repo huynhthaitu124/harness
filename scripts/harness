@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+HARNESS_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HARNESS_ROOT))
+
+
+def _project_root(args_path: str | None) -> Path:
+    root = Path(args_path).expanduser().resolve() if args_path else Path(os.getcwd())
+    if not root.exists():
+        print(f"error: path does not exist: {root}", file=sys.stderr)
+        sys.exit(2)
+    return root
+
+
+# ── init ──────────────────────────────────────────────────────────────────────
+
+def cmd_init(args: argparse.Namespace) -> int:
+    from harness_core.project_init import analyze_project, init_project_full
+
+    target = _project_root(args.path)
+
+    if args.from_analysis:
+        p = Path(args.from_analysis).expanduser()
+        if not p.exists():
+            print(f"error: analysis file not found: {p}", file=sys.stderr)
+            return 2
+        analysis = json.loads(p.read_text(encoding="utf-8"))
+        print(f"[harness init] using analysis from {p}", file=sys.stderr)
+    else:
+        print(f"[harness init] analyzing {target} ...", file=sys.stderr)
+        analysis = analyze_project(target)
+        lang = analysis["language"]
+        fw = analysis.get("framework", "")
+        print(f"[harness init] detected {lang}" + (f"/{fw}" if fw else ""), file=sys.stderr)
+
+    if args.dry_run:
+        print("[harness init] dry-run — no files will be written", file=sys.stderr)
+
+    result = init_project_full(
+        target,
+        HARNESS_ROOT,
+        analysis,
+        dry_run=args.dry_run,
+        skip_index=args.skip_index,
+    )
+
+    if not args.dry_run:
+        _install_symlink(result)
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _install_symlink(result: dict) -> None:
+    this_script = Path(__file__).resolve()
+
+    # Try /usr/local/bin first (needs sudo on macOS); fall back to ~/.local/bin
+    candidates = [Path("/usr/local/bin/harness"), Path.home() / ".local" / "bin" / "harness"]
+    symlink: Path | None = None
+    for candidate in candidates:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            if candidate.is_symlink() or candidate.exists():
+                if Path(os.readlink(candidate)).resolve() == this_script:
+                    print(f"[harness init] already installed: {candidate}", file=sys.stderr)
+                    result["symlink"] = str(candidate)
+                    return
+                candidate.unlink()
+            candidate.symlink_to(this_script)
+            symlink = candidate
+            break
+        except PermissionError:
+            continue
+
+    if symlink is None:
+        print("[harness init] warning: could not install harness command (permission denied on all candidates)", file=sys.stderr)
+        return
+
+    print(f"[harness init] installed: {symlink} → {this_script}", file=sys.stderr)
+    result["symlink"] = str(symlink)
+
+    # If the symlink landed in ~/.local/bin, ensure it's on PATH in .zshrc / .bashrc
+    if symlink.parent == Path.home() / ".local" / "bin":
+        _ensure_path(symlink.parent)
+
+
+def _ensure_path(bin_dir: Path) -> None:
+    marker = str(bin_dir)
+    for rc in (Path.home() / ".zshrc", Path.home() / ".bashrc"):
+        if rc.exists() and marker in rc.read_text(encoding="utf-8"):
+            return  # already present in one of the rc files
+
+    zshrc = Path.home() / ".zshrc"
+    line = f'\nexport PATH="{marker}:$PATH"  # added by harness init\n'
+    try:
+        with zshrc.open("a", encoding="utf-8") as f:
+            f.write(line)
+        print(f"[harness init] added {marker} to PATH in {zshrc}", file=sys.stderr)
+        print(f"[harness init] run `source ~/.zshrc` or open a new terminal", file=sys.stderr)
+    except OSError as exc:
+        print(f"[harness init] warning: could not update {zshrc}: {exc}", file=sys.stderr)
+
+
+# ── eject ─────────────────────────────────────────────────────────────────────
+
+HARNESS_PATHS = [".harness", "HARNESS.md", "HARNESS.html", "configs/claude-mcp.json"]
+
+
+def cmd_eject(args: argparse.Namespace) -> int:
+    target = _project_root(args.path)
+    removed: list[str] = []
+    skipped: list[str] = []
+
+    for rel in HARNESS_PATHS:
+        path = target / rel
+        if not path.exists():
+            skipped.append(rel)
+            continue
+        if args.dry_run:
+            print(f"  [dry-run] would remove {'dir' if path.is_dir() else 'file'}: {path}", file=sys.stderr)
+        else:
+            shutil.rmtree(path) if path.is_dir() else path.unlink()
+        removed.append(str(path))
+
+    configs_dir = target / "configs"
+    if configs_dir.exists() and not any(configs_dir.iterdir()):
+        if not args.dry_run:
+            configs_dir.rmdir()
+        removed.append(str(configs_dir))
+
+    print(json.dumps({
+        "root": str(target),
+        "dry_run": args.dry_run,
+        "removed": removed,
+        "skipped": skipped,
+        "kept": str(target / "production_artifacts"),
+    }, indent=2, ensure_ascii=False))
+    return 0
+
+
+# ── analyze ───────────────────────────────────────────────────────────────────
+
+def cmd_analyze(args: argparse.Namespace) -> int:
+    from harness_core.project_init import analyze_project
+
+    target = _project_root(args.path)
+    analysis = analyze_project(target)
+    print(json.dumps(analysis, indent=2, ensure_ascii=False))
+    return 0
+
+
+# ── grill ─────────────────────────────────────────────────────────────────────
+
+def cmd_grill(args: argparse.Namespace) -> int:
+    from harness_core.project_analyzer import run_grill_session, write_grill_answers_to_harness_md
+    from harness_core.project_init import analyze_project
+
+    target = _project_root(args.path)
+    harness_md = target / "HARNESS.md"
+    if not harness_md.exists():
+        print(f"error: HARNESS.md not found — run `harness init` first", file=sys.stderr)
+        return 2
+
+    project_json = target / ".harness" / "project.json"
+    if project_json.exists():
+        meta = json.loads(project_json.read_text(encoding="utf-8"))
+        language, framework = meta.get("language", "unknown"), meta.get("framework", "")
+        project_name = meta.get("project_name", target.name)
+    else:
+        a = analyze_project(target)
+        language, framework, project_name = a["language"], a["framework"], a["project_name"]
+
+    answers = run_grill_session(target, language, framework, project_name)
+    if not answers:
+        print("\nNo answers recorded. HARNESS.md unchanged.", file=sys.stderr)
+        return 0
+
+    write_grill_answers_to_harness_md(harness_md, answers)
+    print(f"\n✓ {len(answers)} answer(s) written to {harness_md}", file=sys.stderr)
+    print(json.dumps({"updated": str(harness_md), "keys": list(answers.keys())}, indent=2))
+    return 0
+
+
+# ── status ────────────────────────────────────────────────────────────────────
+
+def cmd_status(args: argparse.Namespace) -> int:
+    target = _project_root(args.path)
+    state_path = target / ".harness" / "state.json"
+    project_json = target / ".harness" / "project.json"
+    memory_path = target / "production_artifacts" / "memory.jsonl"
+    feature_path = target / "production_artifacts" / "feature_list.json"
+
+    initialized = state_path.exists()
+    result: dict = {"root": str(target), "initialized": initialized}
+
+    if initialized:
+        result["state"] = json.loads(state_path.read_text(encoding="utf-8"))
+    if project_json.exists():
+        result["project"] = json.loads(project_json.read_text(encoding="utf-8"))
+    if memory_path.exists():
+        lines = [l for l in memory_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        result["memory_records"] = len(lines)
+    if feature_path.exists():
+        features = json.loads(feature_path.read_text(encoding="utf-8")).get("features", [])
+        done = sum(1 for f in features if f.get("status") == "done")
+        result["features"] = {"total": len(features), "done": done, "pending": len(features) - done}
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="harness",
+        description="Tri-center harness CLI. Run from inside a project or pass a path.",
+    )
+    parser.add_argument("--path", "-p", metavar="PATH", help="Target project path (default: current directory)")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    p_init = sub.add_parser("init", help="Initialize harness for this project")
+    p_init.add_argument("--dry-run", action="store_true")
+    p_init.add_argument("--skip-index", action="store_true", help="Skip building BM25 index")
+    p_init.add_argument("--from-analysis", metavar="FILE", help="Use a pre-built analysis JSON")
+
+    p_eject = sub.add_parser("eject", help="Remove harness config, keep data")
+    p_eject.add_argument("--dry-run", action="store_true")
+
+    p_analyze = sub.add_parser("analyze", help="Analyze project and print profile JSON")
+
+    p_grill = sub.add_parser("grill", help="Fill [CUSTOMIZE] section interactively")
+
+    p_status = sub.add_parser("status", help="Show harness state for this project")
+
+    for p in (p_init, p_eject, p_analyze, p_grill, p_status):
+        p.add_argument("path", nargs="?", default=None, metavar="PATH",
+                       help="Project path (default: current directory)")
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        return 0
+
+    dispatch = {
+        "init": cmd_init,
+        "eject": cmd_eject,
+        "analyze": cmd_analyze,
+        "grill": cmd_grill,
+        "status": cmd_status,
+    }
+    return dispatch[args.command](args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

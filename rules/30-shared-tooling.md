@@ -1,0 +1,73 @@
+# Shared Tooling
+
+Shared tools exposed by MCP:
+
+- `harness_get_status`
+- `harness_set_center`
+- `harness_route_task`
+- `harness_record_handoff`
+- `harness_delegate_claude`
+- `harness_delegate_antigravity`
+- `harness_benchmark_context`
+- `harness_init_project`
+- `harness_analyze_project`
+- `harness_init_full`
+- `harness_grill_project`
+- `harness_init_features`
+- `harness_next_feature`
+- `harness_complete_feature`
+- `harness_evaluate_evidence`
+- `harness_record_usage`
+- `harness_usage_report`
+- `harness_index_repo`
+- `harness_search_index`
+- `harness_indexed_context_pack`
+- `harness_contextual_context_pack`
+- `harness_local_model_gate`
+- `harness_plan_local_worker`
+- `harness_plan_structured_local_worker`
+- `harness_scaffold_capability`
+- `harness_list_capabilities`
+- `harness_run_growth_cycle`
+- `harness_run_evaluated_growth_cycle`
+- `harness_audit_handoffs`
+- `harness_doctor`
+- `harness_record_experiment_run`
+- `harness_experiment_report`
+- `harness_ingest_claude_experiment`
+- `harness_ingest_codex_experiment`
+- `harness_hybrid_context_pack`
+- `harness_init_research_registry`
+- `harness_due_research_sources`
+- `harness_record_source_check`
+- `harness_refresh_research_sources`
+- `harness_plan_semantic_index`
+- `harness_evaluate_hybrid_retrieval`
+- `harness_readiness_report`
+- `harness_compact_tool_output`
+- `harness_record_structured_handoff`
+- `harness_validate_structured_handoff`
+- `harness_plan_next_growth_action`
+- `harness_init_growth_campaign`
+- `harness_growth_campaign_status`
+- `harness_plan_local_rag_pipeline`
+- `harness_record_memory`
+- `harness_search_memory`
+- `harness_memory_pack`
+- `harness_sync_artifact_memories`
+- `harness_validate_command`
+- `harness_evaluate_capability`
+- `harness_promote_capability`
+- `harness_mcp_conformance`
+- `harness_mcp_security_audit`
+- `harness_context_pack_audit`
+- `harness_codex_preflight`
+- `harness_aggregate_health`
+- `harness_init_experiment_queue`
+- `harness_plan_next_experiment`
+- `harness_evaluate_experiment_output`
+- `harness_build_experiment_blueprint`
+- `harness_prepare_experiment_run`
+
+Codex and Claude use the MCP server directly.
+Antigravity uses the imported `tri-center-harness` skill and can call scripts directly.

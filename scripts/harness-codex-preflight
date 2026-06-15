@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.codex_preflight import build_codex_preflight, render_codex_preflight_context_pack  # noqa: E402
+
+
+def _qwen_distill(context: str, task: str) -> dict:
+    prompt = (
+        "You are a local preprocessing worker. Distill the context for Codex. "
+        "Return concise Markdown with file/path citations and risks. "
+        "Use only facts present in the supplied context. "
+        "Do not report center readiness, availability, quota reset time, or operational status. "
+        "Use these sections only: Task Focus, Relevant Paths, Decisions, Risks. "
+        f"Task: {task}\n\nContext:\n{context[:7000]}"
+    )
+    payload = {
+        "model": "qwen3.5:9b",
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "think": False,
+        "options": {"num_ctx": 4096, "num_predict": 300, "temperature": 0},
+    }
+    req = urllib.request.Request(
+        "http://localhost:11434/api/chat",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=120) as response:
+        result = json.loads(response.read())
+    return {
+        "context": result.get("message", {}).get("content", ""),
+        "usage": {
+            "prompt_eval_count": result.get("prompt_eval_count", 0),
+            "eval_count": result.get("eval_count", 0),
+        },
+    }
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print("usage: harness-codex-preflight <task> [--local]", file=sys.stderr)
+        return 2
+    use_local = "--local" in sys.argv
+    task = " ".join(arg for arg in sys.argv[1:] if arg != "--local")
+    report = build_codex_preflight(
+        ROOT,
+        task,
+        memory_path=ROOT / "production_artifacts" / "memory.jsonl",
+        local_distiller=_qwen_distill if use_local else None,
+    )
+    out_path = ROOT / "production_artifacts" / "context_packs" / "codex-preflight-context.md"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        render_codex_preflight_context_pack(report, root=ROOT, context_pack_path=out_path),
+        encoding="utf-8",
+    )
+    report["context_pack_path"] = str(out_path)
+    print(json.dumps({key: value for key, value in report.items() if key != "codex_payload"}, indent=2, ensure_ascii=False))
+    return 0 if report["verdict"] == "PASS" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

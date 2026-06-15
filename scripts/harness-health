@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.growth_campaign import campaign_status  # noqa: E402
+from harness_core.harness_doctor import run_harness_doctor  # noqa: E402
+from harness_core.health_suite import aggregate_health  # noqa: E402
+from harness_core.context_pack_audit import audit_context_packs  # noqa: E402
+from harness_core.mcp_conformance import run_mcp_conformance  # noqa: E402
+from harness_core.mcp_security import audit_mcp_security  # noqa: E402
+from harness_core.research_registry import research_registry_report  # noqa: E402
+from harness_core.retrieval_eval import evaluate_hybrid_dataset  # noqa: E402
+from harness_core.token_experiment import evaluate_token_evidence, summarize_experiments  # noqa: E402
+from harness_mcp.server import TOOLS  # noqa: E402
+
+
+def _readiness() -> dict:
+    result = subprocess.run([str(ROOT / "scripts" / "harness-readiness")], cwd=ROOT, text=True, capture_output=True, timeout=30, check=False)
+    return json.loads(result.stdout) if result.stdout.strip() else {"ready_centers": []}
+
+
+def _tests() -> dict:
+    result = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=ROOT, text=True, capture_output=True, timeout=120, check=False)
+    output = f"{result.stdout}\n{result.stderr}"
+    match = re.search(r"Ran (\d+) tests?", output)
+    return {"passed": result.returncode == 0, "count": int(match.group(1)) if match else None}
+
+
+def main() -> int:
+    report = aggregate_health(
+        tests=_tests(),
+        doctor=run_harness_doctor(ROOT),
+        mcp=run_mcp_conformance(ROOT / "scripts" / "harness-mcp-server", cwd=ROOT),
+        retrieval=evaluate_hybrid_dataset(ROOT, ROOT / "production_artifacts" / "evals" / "harness-retrieval.json", top_k=5),
+        research=research_registry_report(ROOT / "production_artifacts" / "research_registry.json"),
+        readiness=_readiness(),
+        campaign=campaign_status(ROOT / "production_artifacts" / "growth_campaign.json", cycle_dir=ROOT / "production_artifacts" / "self_growth"),
+        experiments=evaluate_token_evidence(summarize_experiments(ROOT / "production_artifacts" / "experiments.jsonl")),
+        security=audit_mcp_security(server_text=(ROOT / "harness_mcp" / "server.py").read_text(encoding="utf-8"), tools=TOOLS),
+        context_packs=audit_context_packs(ROOT),
+    )
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 1 if report["verdict"] == "NEEDS_WORK" else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

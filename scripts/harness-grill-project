@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.project_analyzer import (  # noqa: E402
+    run_grill_session,
+    write_grill_answers_to_harness_md,
+)
+from harness_core.project_init import analyze_project  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print("usage: harness-grill-project <target-project-path>", file=sys.stderr)
+        return 2
+
+    target_root = Path(sys.argv[1]).expanduser().resolve()
+    if not target_root.exists():
+        print(f"error: path does not exist: {target_root}", file=sys.stderr)
+        return 2
+
+    harness_md = target_root / "HARNESS.md"
+    if not harness_md.exists():
+        print(f"error: HARNESS.md not found in {target_root} — run harness-init first", file=sys.stderr)
+        return 2
+
+    project_json = target_root / ".harness" / "project.json"
+    if project_json.exists():
+        meta = json.loads(project_json.read_text(encoding="utf-8"))
+        language = meta.get("language", "unknown")
+        framework = meta.get("framework", "")
+        project_name = meta.get("project_name", target_root.name)
+    else:
+        analysis = analyze_project(target_root)
+        language = analysis["language"]
+        framework = analysis["framework"]
+        project_name = analysis["project_name"]
+
+    answers = run_grill_session(target_root, language, framework, project_name)
+
+    if not answers:
+        print("\nNo answers recorded. HARNESS.md unchanged.", file=sys.stderr)
+        return 0
+
+    write_grill_answers_to_harness_md(harness_md, answers)
+    print(f"\n✓ {len(answers)} answer(s) written to {harness_md}", file=sys.stderr)
+    print(json.dumps({"updated": str(harness_md), "keys": list(answers.keys())}, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

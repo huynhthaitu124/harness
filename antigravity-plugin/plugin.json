@@ -1,0 +1,16 @@
+{
+  "name": "tri-center-harness",
+  "version": "0.1.0",
+  "description": "Shared token-saving harness rules for Codex, Claude Code, and Antigravity.",
+  "author": {
+    "name": "Dan"
+  },
+  "keywords": [
+    "harness",
+    "mcp",
+    "rag",
+    "routing",
+    "token"
+  ]
+}
+

@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.contextual_chunks import build_contextual_context_pack  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) < 3:
+        print("usage: harness-contextual <root> <query> [top_k]", file=sys.stderr)
+        return 2
+    root = Path(sys.argv[1]).expanduser()
+    top_k = int(sys.argv[3]) if len(sys.argv) > 3 else 5
+    print(build_contextual_context_pack(root, sys.argv[2], top_k=top_k))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

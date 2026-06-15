@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.retrieval_eval import evaluate_hybrid_dataset  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) < 3:
+        print("usage: harness-retrieval-eval <repo> <dataset.json> [top_k]", file=sys.stderr)
+        return 2
+    top_k = int(sys.argv[3]) if len(sys.argv) > 3 else 5
+    report = evaluate_hybrid_dataset(Path(sys.argv[1]), Path(sys.argv[2]), top_k=top_k)
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0 if report["verdict"] == "PASS" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

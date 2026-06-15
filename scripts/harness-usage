@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.token_ledger import record_usage, summarize_usage  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) < 3:
+        print("usage: harness-usage report <path> | record <path> <center> <input> <output> <cost> [label]", file=sys.stderr)
+        return 2
+    action = sys.argv[1]
+    path = Path(sys.argv[2]).expanduser()
+    if action == "report":
+        print(json.dumps(summarize_usage(path), indent=2, ensure_ascii=False))
+        return 0
+    if action == "record":
+        if len(sys.argv) < 7:
+            print("usage: harness-usage record <path> <center> <input> <output> <cost> [label]", file=sys.stderr)
+            return 2
+        print(
+            json.dumps(
+                record_usage(
+                    path,
+                    center=sys.argv[3],
+                    input_tokens=int(sys.argv[4]),
+                    output_tokens=int(sys.argv[5]),
+                    cost_usd=float(sys.argv[6]),
+                    label=sys.argv[7] if len(sys.argv) > 7 else None,
+                ),
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    print(f"unknown action: {action}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

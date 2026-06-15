@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.structured_worker import plan_structured_local_worker  # noqa: E402
+
+
+def read_machine_state() -> dict[str, int]:
+    swap = subprocess.run(["sysctl", "vm.swapusage"], text=True, capture_output=True, check=False)
+    match = re.search(r"total = ([0-9.]+)M\s+used = ([0-9.]+)M", swap.stdout)
+    total = int(float(match.group(1))) if match else 1
+    used = int(float(match.group(2))) if match else 0
+    pressure = subprocess.run(["memory_pressure"], text=True, capture_output=True, check=False)
+    free_match = re.search(r"System-wide memory free percentage: (\d+)%", pressure.stdout)
+    free = int(free_match.group(1)) if free_match else 0
+    return {"swap_used_mb": used, "swap_total_mb": total, "memory_free_percent": free}
+
+
+def main() -> int:
+    if len(sys.argv) < 4:
+        print("usage: harness-structured-worker <light|complex|heavy|rag-large> <schema-json> <task>", file=sys.stderr)
+        return 2
+    complexity = sys.argv[1]
+    schema = json.loads(sys.argv[2])
+    task = " ".join(sys.argv[3:])
+    plan = plan_structured_local_worker(task, machine=read_machine_state(), task_complexity=complexity, schema=schema)
+    print(json.dumps(plan, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

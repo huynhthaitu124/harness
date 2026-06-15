@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.token_experiment import ingest_codex_jsonl, record_experiment_run, summarize_experiments  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) < 3:
+        print("usage: harness-experiment report <path> | record ... | ingest-codex <path> <id> <fingerprint> <variant> <jsonl-file>", file=sys.stderr)
+        return 2
+    action = sys.argv[1]
+    path = Path(sys.argv[2]).expanduser()
+    if action == "report":
+        print(json.dumps(summarize_experiments(path), indent=2, ensure_ascii=False))
+        return 0
+    if action == "record" and len(sys.argv) >= 9:
+        entry = record_experiment_run(
+            path,
+            experiment_id=sys.argv[3],
+            task_fingerprint=sys.argv[4],
+            center=sys.argv[5],
+            variant=sys.argv[6],
+            input_tokens=int(sys.argv[7]),
+            output_tokens=int(sys.argv[8]),
+            cost_usd=float(sys.argv[9]) if len(sys.argv) > 9 else 0.0,
+        )
+        print(json.dumps(entry, indent=2, ensure_ascii=False))
+        return 0
+    if action == "ingest-codex" and len(sys.argv) == 7:
+        raw = Path(sys.argv[6]).read_text(encoding="utf-8")
+        entry = ingest_codex_jsonl(
+            path,
+            raw,
+            experiment_id=sys.argv[3],
+            task_fingerprint=sys.argv[4],
+            variant=sys.argv[5],
+        )
+        print(json.dumps(entry, indent=2, ensure_ascii=False))
+        return 0
+    print("invalid experiment command", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

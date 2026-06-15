@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.growth_campaign import campaign_status, init_campaign  # noqa: E402
+
+
+def main() -> int:
+    path = ROOT / "production_artifacts" / "growth_campaign.json"
+    cycles = ROOT / "production_artifacts" / "self_growth"
+    action = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if action == "init":
+        hours = float(sys.argv[2]) if len(sys.argv) > 2 else 10.0
+        payload = init_campaign(path, target_hours=hours)
+    elif action == "status":
+        payload = campaign_status(path, cycle_dir=cycles)
+    else:
+        print("usage: harness-campaign init [hours] | status", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

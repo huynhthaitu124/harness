@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.growth_runner import run_evaluated_growth_cycle  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) < 4:
+        print("usage: harness-self-grow <topic> <source-url> <action...>", file=sys.stderr)
+        return 2
+    topic = sys.argv[1]
+    source_url = sys.argv[2]
+    actions = sys.argv[3:]
+    result = run_evaluated_growth_cycle(
+        ROOT,
+        topic=topic,
+        sources=[{"title": topic, "url": source_url}],
+        actions=actions,
+        usage={"center": "codex", "input_tokens": 0, "output_tokens": 0, "cost_usd": 0},
+        required_evidence=["cycle recorded", "usage recorded"],
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

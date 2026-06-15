@@ -1,0 +1,44 @@
+{
+  "preferred_center": "auto",
+  "quotas": {
+    "codex": {
+      "available": false,
+      "relative_budget": "medium",
+      "remaining_percent": 0,
+      "reset_hint": "5:10 AM",
+      "last_error": "worker quota/session limit"
+    },
+    "claude": {
+      "available": true,
+      "relative_budget": "low"
+    },
+    "antigravity": {
+      "available": true,
+      "relative_budget": "high"
+    }
+  },
+  "routing_policy": {
+    "research_heavy_keywords": [
+      "research",
+      "scan",
+      "codebase",
+      "log",
+      "logs",
+      "summarize",
+      "tổng hợp",
+      "nghiên cứu",
+      "đọc repo",
+      "đọc code"
+    ],
+    "coding_keywords": [
+      "implement",
+      "fix",
+      "refactor",
+      "code",
+      "test",
+      "sửa",
+      "cài",
+      "setup"
+    ]
+  }
+}

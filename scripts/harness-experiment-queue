@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness_core.experiment_scheduler import (  # noqa: E402
+    build_experiment_blueprint,
+    init_experiment_queue,
+    plan_next_experiment,
+    prepare_experiment_run,
+)
+
+
+def main() -> int:
+    queue_path = ROOT / "production_artifacts" / "experiment_queue.json"
+    experiments_path = ROOT / "production_artifacts" / "experiments.jsonl"
+    command = sys.argv[1] if len(sys.argv) > 1 else "next"
+    if command == "init":
+        result = init_experiment_queue(queue_path)
+    elif command in {"next", "blueprint", "prepare"}:
+        probe = subprocess.run(
+            [str(ROOT / "scripts" / "harness-readiness")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        readiness = json.loads(probe.stdout) if probe.stdout.strip() else {"ready_centers": []}
+        result = plan_next_experiment(queue_path, experiments_path, readiness)
+        if command == "blueprint" and result.get("verdict") == "READY":
+            result = {"verdict": "READY", "blueprint": build_experiment_blueprint(ROOT, result["run"])}
+        if command == "prepare" and result.get("verdict") == "READY":
+            result = {"verdict": "READY", "manifest": prepare_experiment_run(ROOT, result["run"])}
+    else:
+        print("usage: harness-experiment-queue [init|next|blueprint|prepare]", file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
