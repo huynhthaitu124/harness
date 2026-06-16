@@ -42,6 +42,7 @@ Shared tools exposed by MCP:
 - `harness_search_index`
 - `harness_indexed_context_pack`
 - `harness_contextual_context_pack`
+- `harness_locate_context`
 - `harness_local_context_pack`
 - `harness_local_model_gate`
 - `harness_plan_local_worker`
@@ -95,4 +96,4 @@ Shared tools exposed by MCP:
 
 Codex and Claude use the MCP server directly.
 Antigravity uses the imported `tri-center-harness` skill and can call scripts directly.
-When MCP is stale or unavailable, run `harness rag-pack "<task>"` from the target project so Codex, Claude, Antigravity, and local Ollama consume the same `.harness/context_packs/last-rag-pack.md`.
+When MCP is stale or unavailable, use `harness locate "<task>"` for light tasks and `harness rag-pack "<task>"` for deep handoffs so Codex, Claude, Antigravity, and local Ollama consume the same `.harness/context_packs/last-rag-pack.md` only when full context is useful.

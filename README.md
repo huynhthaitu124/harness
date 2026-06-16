@@ -47,6 +47,7 @@ Run `harness` with no arguments inside any project to open the interactive menu.
 | `harness analyze` | Print project profile JSON — language, framework, entry points |
 | `harness center set <center>` | Set preferred center for this project (`auto` / `codex` / `claude` / `antigravity`) |
 | `harness center get` | Show the current center |
+| `harness locate "<task>"` | Fast locator: likely files, symbols, tests, exact reads, and verification questions |
 | `harness rag-pack "<task>" [--ticket ID]` | Build a task-keyed RAG context pack; symlinked as `last-rag-pack.md` for backward compat |
 | `harness run "<task>" [--ticket ID]` | Build RAG pack for a task and launch the selected agent with context pre-loaded |
 | `harness local plan "<task>"` | Plan Ollama embedding + structured local worker usage before spending cloud tokens |
@@ -137,9 +138,9 @@ The workflow is saved to `.harness/workflow.json` and rendered as the **Ticket W
 
 HARNESS.md            agent-readable guidelines + project profile
 HARNESS.html          full visual doc: architecture, modules, conventions, workflow, open questions
-CLAUDE.md             mandatory harness first-call rule (written/updated by init)
-AGENTS.md             mandatory harness first-call rule (written/updated by init)
-GEMINI.md             mandatory harness first-call rule (written/updated by init)
+CLAUDE.md             fast/light/deep harness policy (written/updated by init)
+AGENTS.md             fast/light/deep harness policy (written/updated by init)
+GEMINI.md             fast/light/deep harness policy (written/updated by init)
 .mcp.json             Claude Code MCP registration — points at harness server for this project
 ```
 
@@ -159,24 +160,33 @@ After init, restart your agent IDE to load the new MCP registration.
 
 Every session after init, agents start from `HARNESS.html` instead of exploring the repo cold.
 
-### How agents receive the harness rule
+### How agents receive the harness policy
 
-During `harness init`, a mandatory block is written into `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` at the project root. Every agent reads its own file at session start, so the rule is in context before the user types anything:
+During `harness init`, a compact policy block is written into `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` at the project root. Every agent reads its own file at session start, so the fast/light/deep decision is in context before the user types anything:
 
 ```
-## Harness — Mandatory First Step
+## Harness — Fast / Light / Deep
 
-For every task, bug, or ticket you receive in this project:
-1. First tool call must be harness_ticket_context (MCP): root=<path>, task=<message>
-2. If MCP unavailable: harness rag-pack "<task>" then read last-rag-pack.md
-3. Never call list_dir, read_file, grep_search, find before step 1
+Use the smallest mode that helps:
+1. `fast`: exact file/function or tiny edit → read the named file and proceed directly.
+2. `light`: target unclear but task is small → call `harness_locate_context` or run `harness locate "<task>"`, then read the real files it suggests.
+3. `deep`: repo-wide debug/refactor/research/handoff/token/RAG/memory work → call `harness_ticket_context`, or run `harness rag-pack "<task>"` if MCP is unavailable.
+
+RAG packs are navigation aids, not source of truth. Before editing, read the actual target files and relevant tests.
 ```
 
-This means the work loop starts correctly whether you open a ticket in a task manager, paste a bug report directly into the agent chat, or run `harness run`. No wrapper command required.
+This means small prompts stay fast, while broad prompts still avoid cold repo scans.
 
 ### Building context for a task
 
-Instead of passing raw file dumps to an agent, build a task-keyed context pack:
+For most coding tasks, start with the locator:
+
+```bash
+harness locate "fix login token handling"
+# returns likely files/symbols/tests plus exact spans to read
+```
+
+For deep handoffs or broad context, build a task-keyed context pack:
 
 ```bash
 harness rag-pack "fix login token handling"
@@ -327,10 +337,13 @@ You run `harness init` once. Claude writes its own onboarding doc. Every future 
 
 ```
 Ticket assigned  (or bug pasted directly into agent chat)
-  → agent reads GEMINI.md / CLAUDE.md → sees mandatory harness rule
-  → agent calls harness_ticket_context(root=<project>, task=<message>)
-      returns: RAG chunks + workflow steps + routing in one call
-  → agent implements using only the files the pack points to
+  → agent reads GEMINI.md / CLAUDE.md → chooses fast, light, or deep
+  → fast: reads the named file and edits directly
+  → light: calls harness_locate_context or harness locate "<task>"
+      returns: likely files + symbols + tests + exact reads
+  → deep: calls harness_ticket_context or harness rag-pack "<task>"
+      returns: RAG chunks + workflow steps + routing
+  → agent reads real target files/tests before editing
   → .harness/memory.jsonl updated
 
 Next ticket starts from memory, not from scratch.

@@ -47,7 +47,13 @@ For compact code retrieval and noisy tool output:
 /Users/danchoingoinhinmuaroi/Projects/Harness/scripts/harness-compact-output <log-file> 4000
 ```
 
-`harness rag-pack` writes `.harness/context_packs/last-rag-pack.md` and includes ready commands for Codex, Claude Sonnet, Antigravity, and local Ollama. Use that shared pack instead of rescanning the repository.
+For small unclear code tasks, prefer:
+
+```bash
+/Users/danchoingoinhinmuaroi/Projects/Harness/scripts/harness locate "<task>" <repo>
+```
+
+`harness locate` returns likely files, symbols, tests, exact reads, and verification questions. `harness rag-pack` writes `.harness/context_packs/last-rag-pack.md` and includes ready commands for Codex, Claude Sonnet, Antigravity, and local Ollama. Treat both as navigation aids, not source of truth; read the real files and tests before editing.
 
 For evidence-grade token savings and center changes:
 

@@ -13,7 +13,7 @@ from harness_core.agent_rag import build_agent_rag_pack
 from harness_core.autopilot import plan_next_growth_action
 from harness_core.context_budget import build_context_pack, measure_context_savings
 from harness_core.context_pack_audit import audit_context_packs
-from harness_core.contextual_chunks import build_contextual_context_pack
+from harness_core.contextual_chunks import build_context_locator, build_contextual_context_pack
 from harness_core.command_policy import validate_command
 from harness_core.codex_preflight import build_codex_preflight
 from harness_core.evaluator import evaluate_evidence
@@ -64,6 +64,7 @@ from harness_core.semantic_index import plan_semantic_index
 from harness_core.self_growth import run_growth_cycle
 from harness_core.structured_worker import plan_structured_local_worker, validate_structured_worker_output
 from harness_core.structured_handoff import validate_structured_handoff, write_structured_handoff
+from harness_core.task_policy import classify_harness_mode
 from harness_core.token_experiment import ingest_claude_result, ingest_codex_jsonl, record_experiment_run, summarize_experiments
 from harness_core.token_ledger import record_usage, summarize_usage
 from harness_core.usage_ingestion import ingest_usage
@@ -576,6 +577,19 @@ TOOLS = [
                 "query": {"type": "string"},
                 "top_k": {"type": "integer", "default": 5},
                 "max_chars_per_chunk": {"type": "integer", "default": 1200},
+            },
+            "required": ["root", "query"],
+        },
+    },
+    {
+        "name": "harness_locate_context",
+        "description": "Fast locator for code work: return likely files, symbols, tests, exact suggested reads, and verification questions. Navigation aid only; real files remain source of truth.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "string"},
+                "query": {"type": "string"},
+                "top_k": {"type": "integer", "default": 8},
             },
             "required": ["root", "query"],
         },
@@ -1285,6 +1299,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "harness_route_task":
         usage  = summarize_usage(ARTIFACTS_DIR / "usage.jsonl")
         result = choose_center(arguments["task"], state, usage_summary=usage)
+        result["harness_mode"] = classify_harness_mode(arguments["task"])
         proj_state = state
         if arguments.get("root"):
             proj_root = Path(arguments["root"]).expanduser()
@@ -1293,7 +1308,6 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 proj_state = load_state(proj_path)
             # Include compact context pack inline so agents don't need a separate call
             try:
-                from harness_core.contextual_chunks import build_contextual_context_pack
                 result["context_pack"] = build_contextual_context_pack(
                     proj_root, arguments["task"], top_k=3, max_chars_per_chunk=800
                 )
@@ -1315,7 +1329,6 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         result["model_tier"] = suggest_model_tier(arguments["task"], proj_state)
         return _text(result)
     if name == "harness_ticket_context":
-        from harness_core.contextual_chunks import build_contextual_context_pack
         from harness_core.workflow_steps import load_workflow
         proj_root  = Path(arguments["root"]).expanduser()
         task       = arguments["task"]
@@ -1353,6 +1366,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return _text({
             "ticket_id":   ticket_id,
             "task":        task,
+            "harness_mode": classify_harness_mode(task),
             "center":      routing.get("center"),
             "model_tier":  suggest_model_tier(task, proj_state),
             "context_pack": context_pack,
@@ -1549,6 +1563,14 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                     max_chars_per_chunk=int(arguments.get("max_chars_per_chunk", 1200)),
                 )
             }
+        )
+    if name == "harness_locate_context":
+        return _text(
+            build_context_locator(
+                Path(arguments["root"]).expanduser(),
+                arguments["query"],
+                top_k=int(arguments.get("top_k", 8)),
+            )
         )
     if name == "harness_local_context_pack":
         return _text(_local_context_pack(

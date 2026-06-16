@@ -734,20 +734,23 @@ def render_harness_md(analysis: dict[str, Any], harness_scripts_path: Path, proj
 - Framework : {framework or "—"}
 - Root      : _(set at init)_
 
-## Mandatory First Step
+## Harness Use Policy
 
-For **every task, bug, or ticket** — regardless of how it arrives:
+Use Harness when it reduces uncertainty or token cost. Do not make it a ritual for tiny, obvious edits.
 
-1. **First tool call**: `harness_ticket_context(root=<project_root>, task=<message>)` via MCP
-2. **If MCP unavailable**: `harness rag-pack "<task>" [--ticket ID]` → read `last-rag-pack.md`
-3. **Never** call `list_dir`, `read_file`, `grep_search`, or `find` before step 1
+- **fast**: exact file/function or tiny edit → read the named file and proceed directly.
+- **light**: target unclear but task is small → use `harness_locate_context` or `harness locate "<task>"`, then read the real files it suggests.
+- **deep**: repo-wide debug/refactor/research/handoff/token/RAG/memory work → call `harness_ticket_context`, or run `harness rag-pack "<task>" [--ticket ID]` if MCP is unavailable.
+
+RAG packs are navigation aids, not source of truth. Before editing, read the actual target files and relevant tests. Extra `rg`/read calls are expected when they answer a specific locator verification question.
 
 ## MCP Tools — Tier 1 (work loop)
 
 | Tool | Parameters | When |
 |------|-----------|------|
-| `harness_ticket_context` | `root`, `task`, `ticket_id?`, `top_k?` | **First call** — RAG chunks + workflow + routing |
+| `harness_ticket_context` | `root`, `task`, `ticket_id?`, `top_k?` | Deep tasks — RAG chunks + workflow + routing |
 | `harness_route_task` | `task`, `root?` | Root unknown — lightweight routing |
+| `harness_locate_context` | `root`, `query`, `top_k?` | Light tasks — likely files, symbols, tests, exact reads |
 | `harness_contextual_context_pack` | `root`, `query`, `top_k?` | More context mid-task |
 | `harness_hybrid_context_pack` | `root`, `query`, `top_k?` | BM25 + symbol boost retrieval |
 | `harness_search_memory` | `path`, `query` | Search prior decisions before implementing |
@@ -1670,5 +1673,4 @@ navLinks.forEach(link => {{
 </body>
 </html>
 """
-
 

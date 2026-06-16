@@ -39,18 +39,22 @@ _HARNESS_BLOCK_END   = "<!-- harness:end -->"
 
 
 def _harness_instruction_block(root: Path, harness_root: Path | None = None) -> str:
-    """Return the mandatory harness block to inject into agent instruction files."""
+    """Return the harness block to inject into agent instruction files."""
     harness_md = root / "HARNESS.md"
     specs_dir  = root / ".harness" / "specs"
     return f"""{_HARNESS_BLOCK_START}
 ## Harness
 
-For every task in this project — call `harness_ticket_context` first (MCP), or
-run `harness rag-pack "<task>"` if MCP is unavailable.  Never `grep`/`find`/`read_file`
-source files before loading Harness context.
+Use Harness when it reduces uncertainty or token cost:
+
+- fast: exact file/function or tiny edit → read the named file and proceed directly.
+- light: target unclear but task is small → use `harness_locate_context` or `harness locate "<task>"`, then read the real files it suggests.
+- deep: repo-wide debug/refactor/research/handoff/token/RAG/memory work → call `harness_ticket_context`, or run `harness rag-pack "<task>"` if MCP is unavailable.
+
+RAG packs are navigation aids, not source of truth. Before editing, read the actual target files and relevant tests. Extra `rg`/read calls are expected when they answer a specific locator verification question.
 
 - Project root : `{root}`
-- Rules + tools: `{harness_md}` (mandatory first-step rule, Tier-1 MCP table)
+- Rules + tools: `{harness_md}` (fast/light/deep policy, Tier-1 MCP table)
 - Full docs    : `{root}/HARNESS.html` (architecture, modules, conventions, tickets)
 
 **Workflow tasks** (`harness workflow`): when you receive a prompt that starts with

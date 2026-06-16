@@ -15,11 +15,12 @@ from typing import Any
 
 _TIERS: list[dict[str, Any]] = [
     {
-        "heading": "Tier 1 — Work loop (call on every task)",
-        "note": "These are the only tools most tasks need.  Call in order: context → memory → implement → record.",
+        "heading": "Tier 1 — Work loop (non-fast tasks)",
+        "note": "Fast tasks may proceed directly. For light/deep tasks, locate context first, then read real files before editing.",
         "tools": [
             "harness_ticket_context",
             "harness_route_task",
+            "harness_locate_context",
             "harness_contextual_context_pack",
             "harness_hybrid_context_pack",
             "harness_search_memory",
@@ -236,7 +237,9 @@ def generate_compact_tier1_md(harness_root: Path, schema_path: Path) -> str:
         + rows
     )
 
-    return f"""### Available MCP tools (Tier 1 — work loop)
+    return f"""### Available MCP tools (Tier 1 — light/deep work loop)
+
+Fast tasks with exact files can proceed directly. For light/deep tasks, use locator/context tools as navigation, then read the real files before editing.
 
 {table}
 

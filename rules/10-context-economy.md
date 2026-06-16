@@ -1,6 +1,14 @@
 # Context Economy Rules
 
-The default mode is token conservation.
+The default mode is token conservation without blocking obvious work.
+
+Use the retrieval ladder:
+
+1. `fast`: when the user names the exact file/function or asks for a tiny edit, proceed directly after reading that real file.
+2. `light`: when the target is unclear, run `harness locate "<task>"` or MCP `harness_locate_context` to get likely files, symbols, tests, and exact suggested reads.
+3. `deep`: for repo-wide debugging, refactors, research, handoffs, or multi-agent work, build a full `harness rag-pack "<task>"`.
+
+RAG is a navigation aid, not source of truth. Before editing code, read the actual target files and relevant tests. Extra `rg`/read calls are expected when they answer a specific verification question from the locator.
 
 Before sending cloud context:
 

@@ -18,18 +18,19 @@ The user may switch the active center at any time:
 - `antigravity`: best when large token budget or Gemini/Antigravity tooling is preferred.
 - `auto`: ask the harness router to choose.
 
-Before any read-heavy, repo-wide, debug, research, refactor, or multi-agent task, call the shared harness router first:
+Use the smallest Harness mode that helps:
 
-1. Use `harness_route_task` with the user's task.
-2. If it says `rag_summarize`, get or create a compact context pack before asking any cloud center to reason.
-3. Delegate only the compact context pack, never raw repo dumps.
-4. Record a handoff when switching center.
+- `fast`: exact file/function or tiny edit. Work directly after reading the named file.
+- `light`: target unclear but task is small. Use `harness locate "<task>"` or MCP `harness_locate_context`, then read the real files it suggests.
+- `deep`: read-heavy, repo-wide, debug, research, refactor, token/RAG/memory, handoff, or multi-agent task. Use `harness_route_task` or `harness_ticket_context`, then build a compact context pack if needed.
+
+RAG packs are navigation aids, not source of truth. Before editing, read actual target files and relevant tests. Extra `rg`/read calls are expected when they answer a specific locator verification question.
 
 For long-running work, initialize or use `feature_list.json`. Features are default-fail and require evidence before completion.
 
 ## Core Workflow Commands
 
-- `scripts/harness`: unified project CLI — run from inside a project directory. Subcommands: `init`, `eject`, `analyze`, `grill`, `status`, `center`, `rag-pack`. Accepts an optional path argument to target a different directory.
+- `scripts/harness`: unified project CLI — run from inside a project directory. Subcommands: `init`, `eject`, `analyze`, `grill`, `status`, `center`, `locate`, `rag-pack`, `local`, `readiness`, `usage`, `mcp`. Accepts an optional path argument to target a different directory.
 - `scripts/harness-init`: low-level init entry point (used internally by `harness init`).
 - `scripts/harness-analyze-project`: low-level analyze entry point (used internally by `harness analyze`).
 - `scripts/harness-grill-project`: low-level grill entry point (used internally by `harness grill`).
@@ -38,6 +39,7 @@ For long-running work, initialize or use `feature_list.json`. Features are defau
 - `scripts/harness-readiness`: verify live CLI, quota, failure, and local-worker state before delegation.
 - `harness readiness`: unified live readiness report for Codex, Claude, Antigravity, and local Ollama.
 - `scripts/harness-hybrid-context`: build the default compact code context pack.
+- `harness locate "<task>"`: fast locator with likely files, symbols, tests, exact reads, and verification questions.
 - `harness rag-pack "<task>"`: write `.harness/context_packs/last-rag-pack.md` with one shared RAG payload plus Codex, Claude Sonnet, Antigravity, and local Ollama commands.
 - `harness local plan "<task>"`: plan embedding model, structured local worker, and fallback RAG path before using Ollama for complex work.
 - `harness research-refresh`: refresh the default official Codex, Claude, Ollama, MCP, and Antigravity source registry.
@@ -65,7 +67,7 @@ For long-running work, initialize or use `feature_list.json`. Features are defau
 Default to the cheapest reliable path:
 
 - Use local/file/RAG summarization before cloud reasoning.
-- Before any cloud center scans repo context, prefer `harness rag-pack "<task>"` and pass that pack to Codex, Claude, Antigravity, or the local Ollama worker.
+- Before any cloud center scans broad repo context, prefer `harness locate "<task>"` first; escalate to `harness rag-pack "<task>"` only when locator is insufficient or handoff/deep reasoning is needed.
 - Before Codex executes repo-heavy work, run `scripts/harness-codex-preflight "<task>" --local` when Qwen is usable; send the compact payload, not raw repo context.
 - Keep tool outputs short and cite paths/line numbers instead of pasting whole files.
 - Use one center at a time unless there is a clear evaluation benefit.

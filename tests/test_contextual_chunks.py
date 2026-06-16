@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness_core.contextual_chunks import build_contextual_chunks, build_contextual_context_pack
+from harness_core.contextual_chunks import build_context_locator, build_contextual_chunks, build_contextual_context_pack
 
 
 class ContextualChunksTests(unittest.TestCase):
@@ -38,6 +38,19 @@ class ContextualChunksTests(unittest.TestCase):
         self.assertIn("# Contextual context pack", pack)
         self.assertIn("## auth.py", pack)
         self.assertNotIn("## billing.py", pack)
+
+    def test_locator_returns_navigation_not_source_of_truth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "auth.py").write_text("def login_user(token):\n    return bool(token)\n", encoding="utf-8")
+            (root / "test_auth.py").write_text("def test_login_user():\n    assert login_user('x')\n", encoding="utf-8")
+
+            locator = build_context_locator(root, "login token", top_k=2)
+
+        self.assertEqual("repository_files_must_be_read_before_editing", locator["source_of_truth"])
+        self.assertEqual("auth.py", locator["likely_targets"][0]["path"])
+        self.assertIn("suggested_read", locator["likely_targets"][0])
+        self.assertTrue(locator["verification_questions"])
 
 
 if __name__ == "__main__":

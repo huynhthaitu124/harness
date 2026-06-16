@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from harness_core.context_budget import estimate_tokens, measure_context_savings
+from harness_core.contextual_chunks import build_context_locator
 from harness_core.hybrid_retrieval import build_hybrid_context_pack
 from harness_core.memory_index import build_memory_pack
 from harness_core.router import CENTERS, load_state
@@ -50,6 +51,7 @@ def build_agent_rag_pack(
     memory_path = _memory_path(root)
     sources = []
     parts = []
+    locator = build_context_locator(root, task, top_k=8)
     if memory_path.exists():
         memory_pack = build_memory_pack(memory_path, task, top_k=5, max_chars=max_payload_chars // 3)
         if memory_pack.strip():
@@ -82,6 +84,7 @@ def build_agent_rag_pack(
         context_pack_path=out_path,
         sources=sources,
         payload=payload,
+        locator=locator,
         commands=commands,
     )
     out_path.write_text(pack_text, encoding="utf-8")
@@ -102,6 +105,7 @@ def build_agent_rag_pack(
         "local_model": model,
         "context_pack_path": str(out_path),
         "payload_tokens_estimate": estimate_tokens(payload),
+        "locator": locator,
         "raw_tokens_estimate": savings["raw_tokens"],
         "estimated_savings_percent": savings["savings_percent"],
         "commands": commands,
@@ -117,10 +121,12 @@ def render_agent_rag_pack(
     context_pack_path: Path,
     sources: list[str],
     payload: str,
+    locator: dict[str, Any],
     commands: dict[str, str],
 ) -> str:
     rel_path = _display_path(root, context_pack_path)
     command_lines = "\n".join(f"# {name}\n{command}" for name, command in commands.items())
+    locator_text = json.dumps(locator, indent=2, ensure_ascii=False)
     return "\n".join(
         [
             "# Harness Shared RAG Pack",
@@ -131,6 +137,16 @@ def render_agent_rag_pack(
             f"center: {center}",
             f"source: {', '.join(sources) if sources else 'none'}",
             f"local_model: {local_model}",
+            "",
+            "## Grounding Policy",
+            "",
+            "This pack is a navigation aid, not source of truth. Before editing, read the real target files and tests listed by the locator. Extra grep/read is expected when it answers a specific verification question.",
+            "",
+            "## Locator",
+            "",
+            "```json",
+            locator_text,
+            "```",
             "",
             "## Agent Commands",
             "",

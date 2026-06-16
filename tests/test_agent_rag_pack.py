@@ -35,7 +35,11 @@ class AgentRagPackTests(unittest.TestCase):
             self.assertIn("/api/chat", content)
             self.assertNotIn("'$(cat", content)
             self.assertIn('cat "$PACK"', content)
+            self.assertIn("## Grounding Policy", content)
+            self.assertIn("navigation aid, not source of truth", content)
+            self.assertIn("## Locator", content)
             self.assertIn("## Retrieval Payload", content)
+            self.assertIn("locator", report)
 
     def test_project_center_uses_state_when_requested(self):
         with tempfile.TemporaryDirectory() as tmp:

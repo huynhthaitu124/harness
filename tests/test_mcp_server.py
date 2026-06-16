@@ -98,6 +98,7 @@ class McpServerTests(unittest.TestCase):
         )
 
         self.assertIn("rag_summarize", response["result"]["content"][0]["text"])
+        self.assertIn("harness_mode", response["result"]["content"][0]["text"])
 
     def test_route_task_uses_usage_ledger_for_auto_center(self):
         ledger = server.ARTIFACTS_DIR / "usage.jsonl"
@@ -327,6 +328,27 @@ class McpServerTests(unittest.TestCase):
         text = response["result"]["content"][0]["text"]
         self.assertIn("Contextual context pack", text)
         self.assertIn("symbol: def login_user(token):", text)
+
+    def test_locate_context_tool_returns_suggested_reads(self):
+        root = Path(self.tmp.name) / "locator-repo"
+        root.mkdir()
+        (root / "auth.py").write_text("def login_user(token):\n    return bool(token)\n", encoding="utf-8")
+
+        response = dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 64,
+                "method": "tools/call",
+                "params": {
+                    "name": "harness_locate_context",
+                    "arguments": {"root": str(root), "query": "login token", "top_k": 1},
+                },
+            }
+        )
+
+        text = response["result"]["content"][0]["text"]
+        self.assertIn("repository_files_must_be_read_before_editing", text)
+        self.assertIn("suggested_read", text)
 
     def test_structured_local_worker_tool_exposes_schema_plan(self):
         response = dispatch(

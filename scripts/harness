@@ -1432,6 +1432,14 @@ def run_rag_pack(target: Path, *, query: str, center: str = "project", local_mod
     return 0 if report["verdict"] == "PASS" else 1
 
 
+def run_locate(target: Path, *, query: str, top_k: int = 8) -> int:
+    from harness_core.contextual_chunks import build_context_locator
+
+    locator = build_context_locator(target, query, top_k=top_k)
+    print(json.dumps(locator, indent=2, ensure_ascii=False))
+    return 0 if locator["likely_targets"] else 1
+
+
 def run_research_refresh(target: Path, *, force: bool = False) -> int:
     from harness_core.research_refresh import refresh_default_research
 
@@ -2156,6 +2164,7 @@ _MENU_ITEMS = [
     ("init",         "init",         "Full project init: detect stack → agent research → write HARNESS.html"),
     ("update",       "update",       "Pull latest from GitHub; optionally regenerate docs/MCP for this project"),
     ("run",          "run",          "Build RAG pack + launch agent with context pre-loaded"),
+    ("locate",       "locate",       "Fast locator: likely files, symbols, tests, exact reads"),
     ("rag-pack",     "rag-pack",     "Build task-keyed RAG context pack  [--ticket ID]"),
     ("local plan",   "local plan",   "Plan Ollama embedding + structured local worker usage"),
     ("readiness",    "readiness",    "Show live Codex / Claude / Antigravity / Ollama readiness"),
@@ -2178,6 +2187,7 @@ _ALL_COMMANDS: list[tuple[str, str]] = [
     ("harness init",               "Full project init: detect stack → agent research → write HARNESS.html"),
     ("harness update",             "Pull latest harness; optionally regenerate docs/MCP for this project"),
     ("harness run \"<task>\"",     "Build RAG pack + launch agent with context pre-loaded"),
+    ("harness locate \"<task>\"",  "Fast locator: likely files, symbols, tests, exact reads"),
     ("harness rag-pack \"<task>\"","Build task-keyed RAG context pack  [--ticket ID]"),
     ("harness local plan \"<task>\"","Plan local Ollama worker + embedding fallback"),
     ("harness readiness",          "Show live Codex / Claude / Antigravity / Ollama readiness"),
@@ -2278,6 +2288,10 @@ def launch_menu(target: Path) -> None:
                 task = prompt_input(f"  {DIM}Task (esc=cancel):{R} ")
                 if task:
                     run_ticket(target, task, ticket_id=None, agent_name=None)
+            elif chosen == "locate":
+                query = prompt_input(f"  {DIM}Task/query (esc=cancel):{R} ")
+                if query:
+                    run_locate(target, query=query)
             elif chosen == "rag-pack":
                 query = prompt_input(f"  {DIM}Task/query (esc=cancel):{R} ")
                 if query:
@@ -2358,6 +2372,11 @@ def main() -> int:
     p_rag.add_argument("--center", choices=["project", "auto", "codex", "claude", "antigravity"], default="project")
     p_rag.add_argument("--local-model", default=None)
 
+    p_locate = sub.add_parser("locate", help="Fast locator: likely files, symbols, tests, and exact reads")
+    p_locate.add_argument("query", help="Task/query to locate code for")
+    p_locate.add_argument("path", nargs="?", default=None, metavar="PATH")
+    p_locate.add_argument("--top-k", type=int, default=8)
+
     p_local = sub.add_parser("local", help="Plan local Ollama embedding and structured-worker usage")
     local_sub = p_local.add_subparsers(dest="local_action", metavar="<plan>", required=True)
     p_local_plan = local_sub.add_parser("plan", help="Plan local RAG/structured worker for a task")
@@ -2411,7 +2430,7 @@ def main() -> int:
     p_mcp_security.add_argument("path", nargs="?", default=None, metavar="PATH")
 
     for name, p in sub.choices.items():
-        if name not in {"center", "rag-pack", "run", "mcp", "update", "local", "usage"}:
+        if name not in {"center", "rag-pack", "locate", "run", "mcp", "update", "local", "usage"}:
             p.add_argument("path", nargs="?", default=None, metavar="PATH")
 
     args = parser.parse_args()
@@ -2436,6 +2455,8 @@ def main() -> int:
         return run_center(target, action=args.center_action, value=getattr(args, "center_value", None))
     if args.command == "rag-pack":
         return run_rag_pack(target, query=args.query, center=args.center, local_model=args.local_model)
+    if args.command == "locate":
+        return run_locate(target, query=args.query, top_k=args.top_k)
     if args.command == "local":
         return run_local_plan(
             target,

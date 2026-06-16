@@ -1,6 +1,11 @@
 # Center Selection Rules
 
-Use `scripts/harness-center status` or MCP `harness_get_status` before non-trivial work.
+Use fast/light/deep before choosing a center:
+
+- `fast`: exact file/function or tiny edit. Stay with the current agent and work directly.
+- `light`: target unclear but task is small. Use `harness locate "<task>"` or MCP `harness_locate_context`, then read the real files it points to.
+- `deep`: repo-wide, debugging, refactor, research, handoff, token/RAG/memory, or multi-agent work. Use `scripts/harness-center status` or MCP `harness_get_status`, then build a compact context pack if needed.
+
 Use `scripts/harness-readiness` before long delegations or when a center recently failed.
 
 Center meanings:
